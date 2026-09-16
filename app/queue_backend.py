@@ -57,9 +57,14 @@ class SheetQueue:
 
     def read_rows(self) -> list[QueueRow]:
         svc = _svc()
+        # Range must cover every HEADER column -- hardcoding a fixed letter
+        # here silently truncates any column appended after it (this bit us
+        # for consecutive_answered_count, appended at the end of HEADER: reads
+        # always saw "" for that column even though writes landed correctly).
+        last_col = col_letter(len(HEADER) - 1)
         vals = (
             svc.spreadsheets().values()
-            .get(spreadsheetId=CFG.sheet_id, range=f"{self.tab}!A2:U")
+            .get(spreadsheetId=CFG.sheet_id, range=f"{self.tab}!A2:{last_col}")
             .execute().get("values", [])
         )
         rows: list[QueueRow] = []
@@ -96,8 +101,9 @@ class SheetQueue:
         ).execute()
 
     def clear_data_rows(self) -> None:
+        last_col = col_letter(len(HEADER) - 1)
         _svc().spreadsheets().values().clear(
-            spreadsheetId=CFG.sheet_id, range=f"{self.tab}!A2:U100000"
+            spreadsheetId=CFG.sheet_id, range=f"{self.tab}!A2:{last_col}100000"
         ).execute()
 
 
