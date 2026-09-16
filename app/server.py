@@ -92,20 +92,24 @@ def _lookup_queue_row(phone: str):
         return None
 
 
-def _format_local(now_utc: datetime, queue_row) -> str:
-    """Human-readable timestamp in the called company's own local timezone,
-    falling back to UTC if the company isn't in the Queue or has no valid
-    timezone. Never raises -- this is a display convenience, not something
+def _format_local(now_utc: datetime, queue_row) -> tuple[str, str]:
+    """(date, time) in the called company's own local timezone, falling back
+    to UTC if the company isn't in the Queue or has no valid timezone. Split
+    into separate cells so email mail-merge can reference just the time
+    without the date. Time is bare (no tz abbreviation) since it's already in
+    the recipient's own local time -- adding e.g. "EDT" would be redundant
+    for them. Never raises -- this is a display convenience, not something
     call resolution depends on."""
     try:
         from .timezones import parse_tz
 
         tz = parse_tz(queue_row.timezone) if queue_row is not None else None
         if tz is not None:
-            return now_utc.astimezone(tz).strftime("%b %d, %Y %I:%M %p %Z")
+            local = now_utc.astimezone(tz)
+            return local.strftime("%b %d, %Y"), local.strftime("%I:%M %p")
     except Exception as e:  # noqa: BLE001 - best effort only
         log.warning("logged_at_local formatting failed: %s", e)
-    return now_utc.strftime("%b %d, %Y %I:%M %p UTC")
+    return now_utc.strftime("%b %d, %Y"), now_utc.strftime("%I:%M %p UTC")
 
 
 def _twiml(body: str) -> Response:
@@ -214,10 +218,12 @@ def _build_row(rec, outcome: str, note: str) -> dict:
     now_utc = datetime.now(timezone.utc)
     phone = rec.to_number or request.form.get("To", "")
     queue_row = _lookup_queue_row(phone)
+    logged_at_date, logged_at_time = _format_local(now_utc, queue_row)
     return {
         "company_name": queue_row.company_name if queue_row is not None else "",
         "logged_at_iso": now_utc.isoformat(),
-        "logged_at_local": _format_local(now_utc, queue_row),
+        "logged_at_date": logged_at_date,
+        "logged_at_time": logged_at_time,
         "phone_e164": phone,
         "outcome": outcome,
         "answered_by": rec.answered_by or "",

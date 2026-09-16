@@ -29,7 +29,8 @@ HEADER = [
     "company_name",       # looked up from the Queue tab by phone -- not stored independently
     "phone_e164",
     "outcome",
-    "logged_at_local",    # human-readable, in the CALLED COMPANY's own local timezone
+    "logged_at_date",     # split from logged_at_time 2026-09-17 so email mail-merge can
+    "logged_at_time",     # reference just the time; both in the CALLED COMPANY's own local timezone
     "ivr_fallback_flagged",
     "notes",
     "ivr_transcript",
