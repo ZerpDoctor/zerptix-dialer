@@ -1,0 +1,17 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+client_secret*.json
+*.log
+.DS_Store
+cloudflared.exe
+*.tunnel.out
+*.tunnel.err
+*.pid
+srv.out
+srv.err
+desktop.ini
+.claude/
+audit_data.txt
