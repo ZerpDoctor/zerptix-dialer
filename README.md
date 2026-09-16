@@ -456,19 +456,26 @@ account, not the code.
 
 ---
 
-## Deploying to Railway (later)
+## Deploying to Railway
 
-Not required for core-loop testing, but the app is Railway-ready:
-
-1. New project → deploy from repo. Railway detects Python via `requirements.txt`
-   and uses the `Procfile` (the `web` process = the Flask server).
-2. Set all the `.env` variables in Railway's **Variables** tab (do not commit
-   `.env`). Set `PUBLIC_BASE_URL` to the Railway-provided domain.
-3. `TWILIO_VALIDATE_SIGNATURE=true`, `TEST_MODE=true` until you're ready.
-4. Keep `--workers 1` (already in the `Procfile`).
-5. The scheduler runs as **Railway cron** — schedule `python -m app.scheduler tick`
-   every ~10 min (it's idempotent per company per day), or add a second Railway
-   service running `python -m app.scheduler run`.
+1. New project → **Deploy from GitHub repo**. Railway detects Python via
+   `requirements.txt`/`runtime.txt` and reads the `Procfile`, which has two
+   process lines: `web` (the Flask server) and `worker` (the scheduler loop).
+   Railway auto-creates **one service per Procfile line** on first connect —
+   you do not need to manually add a second service or set a custom start
+   command for the scheduler; it's already `python -m app.scheduler run`.
+2. Keep the Procfile free of `#` comments. Railway's Procfile parser does not
+   reliably skip comment lines — a comment containing a `:` gets misread as
+   its own bogus process (name = text before the colon, command = text
+   after), producing a phantom service that fails to build. If you ever see
+   an extra service card with a garbage name, delete it; it's not real.
+3. Set all the `.env` variables in **both** services' Variables tabs (do not
+   commit `.env`). Set `PUBLIC_BASE_URL` to the `web` service's Railway
+   domain (Settings → Networking) once it's assigned — not a placeholder.
+4. `TWILIO_VALIDATE_SIGNATURE=true`, `TEST_MODE=true` until you're ready.
+5. `web`'s `--workers 1` (already in the `Procfile`) is load-bearing, not a
+   knob to tune — call state (`app/call_store.py`) is in-process memory, so a
+   second gunicorn worker would fork a second, inconsistent copy of it.
 
 ---
 
