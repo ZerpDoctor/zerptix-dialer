@@ -399,10 +399,19 @@ def ivr_turn(stage: str, level: int) -> Response:
         return _twiml("<Hangup/>")
 
     # 2. AMD said 'human' before we pressed anything and it doesn't look like a
-    #    menu -> trust it (false-positive safety net).
+    #    menu -> trust it (false-positive safety net). Requires >=2 gather
+    #    cycles first: a longer scripted business greeting (marketing copy,
+    #    hours, THEN "press 4 for...") doesn't look like a menu on its first
+    #    fragment either -- resolving on turn 1 alone cut calls off before the
+    #    real menu instruction, buried later in the message, was ever heard
+    #    (confirmed real incidents 2026-09-16: ACR, Bravado Group). A genuine
+    #    human greeting is still resolved fast -- it naturally produces an
+    #    empty follow-up turn almost immediately, satisfying gather_count>=2
+    #    within one extra ~5s cycle, not a real delay.
     if (
         (rec.answered_by or "").lower() == "human"
         and not rec.digits_sent
+        and rec.gather_count >= 2
         and not ivr.looks_like_menu(rec.transcript_accum).is_menu
     ):
         STORE.update(call_sid, resolve_note="AMD=human before any menu; treated as answered")
