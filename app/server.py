@@ -495,14 +495,18 @@ def _conclude_not_menu(call_sid: str, rec) -> Response:
 
 
 def _ivr_tail(call_sid: str, rec) -> Response:
+    """Post-navigation wait for pickup/hold resolution. Spec section 3 step 7:
+    'No AMD resolution by the 60-second cap -> extended_hold, force hangup' --
+    conclusive speech or the master timer are the ONLY things allowed to end
+    this early. A prior 'give up after 2 empty tail turns' (~10s) shortcut
+    violated that: it hung up long before the documented 60s budget was used,
+    mislabeling calls that were still genuinely on hold as extended_hold based
+    on 10 seconds of silence, not 60. Removed."""
     tail = rec.transcript_accum[rec.transcript_at_last_digit:].strip()
-    tail_turns = STORE.bump_tail(call_sid)
+    STORE.bump_tail(call_sid)
     conclusive = bool(tail) and ivr.classify_tail(tail) != "unknown"
-    over_budget = (
-        STORE.seconds_since_answered(call_sid) >= CFG.ivr_master_timeout_seconds - 3
-        or rec.gather_count >= CFG.ivr_max_gather_cycles
-    )
-    if conclusive or tail_turns >= 2 or over_budget:
+    over_budget = STORE.seconds_since_answered(call_sid) >= CFG.ivr_master_timeout_seconds - 3
+    if conclusive or over_budget:
         _resolve(call_sid)
         return _twiml("<Hangup/>")
     return _twiml(_gather("tail", 0, CFG.ivr_tail_gather_seconds))
