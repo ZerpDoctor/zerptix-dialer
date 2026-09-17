@@ -440,32 +440,39 @@ def ivr_turn(stage: str, level: int) -> Response:
     if menu_look.is_menu or (gatekeeping and gatekeeping.has_digit_option):
         decision = ivr.decide_digit(segment)
 
-        if not decision.is_menu:
-            # Haiku vetoed it -> treat as NOT a menu (spec section 4 guard).
-            log.info("IVR menu vetoed call_sid=%s: %s", call_sid, decision.reasoning)
-            return _conclude_not_menu(call_sid, rec)
+        if decision.is_menu:
+            if decision.digit is None:
+                STORE.mark_menu_no_digit(call_sid, decision.classifier, decision.reasoning)
+                log.info("IVR menu detected but no digit call_sid=%s: %s", call_sid, decision.reasoning)
+                _resolve(call_sid)
+                return _twiml("<Hangup/>")
 
-        if decision.digit is None:
-            STORE.mark_menu_no_digit(call_sid, decision.classifier, decision.reasoning)
-            log.info("IVR menu detected but no digit call_sid=%s: %s", call_sid, decision.reasoning)
-            _resolve(call_sid)
-            return _twiml("<Hangup/>")
+            STORE.record_digit(call_sid, decision.digit, decision.classifier,
+                               decision.flagged, decision.reasoning)
+            STORE.update(call_sid, phase="navigating")
+            log.info(
+                "IVR press call_sid=%s digit=%s classifier=%s flagged=%s (%s)",
+                call_sid, decision.digit, decision.classifier, decision.flagged, decision.reasoning,
+            )
 
-        STORE.record_digit(call_sid, decision.digit, decision.classifier,
-                           decision.flagged, decision.reasoning)
-        STORE.update(call_sid, phase="navigating")
-        log.info(
-            "IVR press call_sid=%s digit=%s classifier=%s flagged=%s (%s)",
-            call_sid, decision.digit, decision.classifier, decision.flagged, decision.reasoning,
-        )
-
-        next_level = level + 1
-        if next_level >= 2:  # navigated 2 levels -> stop (spec section 3 step 5)
-            STORE.update(call_sid, phase="awaiting_tail")
+            next_level = level + 1
+            if next_level >= 2:  # navigated 2 levels -> stop (spec section 3 step 5)
+                STORE.update(call_sid, phase="awaiting_tail")
+                return _twiml(f'<Play digits="{decision.digit}"/>'
+                              + _gather("tail", 0, CFG.ivr_tail_gather_seconds))
             return _twiml(f'<Play digits="{decision.digit}"/>'
-                          + _gather("tail", 0, CFG.ivr_tail_gather_seconds))
-        return _twiml(f'<Play digits="{decision.digit}"/>'
-                      + _gather("menu", next_level, CFG.ivr_tail_gather_seconds))
+                          + _gather("menu", next_level, CFG.ivr_tail_gather_seconds))
+
+        # Haiku vetoed a keyword false-positive (spec section 4 guard). This
+        # used to jump straight to _conclude_not_menu(), which resolves
+        # immediately if AMD already has a verdict buffered -- ending the
+        # call outright on a false structural match (e.g. "8 to 5" business
+        # hours matching the digit+"to" menu-option pattern), even when a
+        # real menu instruction was still coming later in a longer message
+        # (confirmed live 2026-09-16). A veto means "not a menu YET", not
+        # "never" -- fall through to the exact same empty/gather-cap/
+        # keep-listening logic as a plain non-match, below.
+        log.info("IVR menu vetoed call_sid=%s: %s", call_sid, decision.reasoning)
 
     if gatekeeping and gatekeeping.is_gatekeeping and not gatekeeping.has_digit_option:
         log.info("Gatekeeping detected call_sid=%s: %s", call_sid, gatekeeping.reasoning)
@@ -473,7 +480,7 @@ def ivr_turn(stage: str, level: int) -> Response:
         _resolve(call_sid)
         return _twiml("<Hangup/>")
 
-    # Not (yet) a menu, not gatekeeping.
+    # Not (yet) a menu (or a vetoed false-positive), not gatekeeping.
     if empty:
         return _conclude_not_menu(call_sid, rec)
     if rec.gather_count >= CFG.ivr_max_gather_cycles:
@@ -542,14 +549,18 @@ def webhook_amd() -> Response:
         return Response("", status=204)
 
     if phase in ("listening", "navigating"):
-        # Mid-IVR: AMD judged the menu audio, not the final party. Only an
-        # unambiguous 'human' with no digit pressed and no menu language is
-        # actionable; everything else is buffered for the IVR flow to decide.
-        if ab == "human" and not rec.digits_sent and not ivr.looks_like_menu(rec.transcript_accum).is_menu:
-            STORE.update(call_sid, resolve_note="AMD=human during listen; no menu detected")
-            _resolve(call_sid)
-        else:
-            log.info("AMD buffered during IVR navigation (phase=%s)", phase)
+        # Mid-IVR: AMD judged the menu audio, not the final party -- always
+        # buffer, never resolve here. This used to resolve immediately on
+        # 'human' + no-menu-detected-YET, but AMD often arrives within
+        # milliseconds of connect, before any speech has even been gathered
+        # -- looks_like_menu("") is trivially "not a menu", so this fired on
+        # an empty transcript and ended calls before they'd heard anything
+        # (confirmed live: a call resolved 20ms after connect, before its
+        # first /ivr/turn). The /ivr/turn flow's own _conclude_not_menu()
+        # already resolves correctly using this same answered_by value, but
+        # only once a turn genuinely comes back empty or the gather-cycle
+        # cap is hit -- that is the right point, not AMD's mere arrival.
+        log.info("AMD buffered during IVR navigation (phase=%s)", phase)
         return Response("", status=204)
 
     if phase == "dialing":
