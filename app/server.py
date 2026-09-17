@@ -515,7 +515,14 @@ def _ivr_tail(call_sid: str, rec) -> Response:
     on 10 seconds of silence, not 60. Removed."""
     tail = rec.transcript_accum[rec.transcript_at_last_digit:].strip()
     STORE.bump_tail(call_sid)
-    conclusive = bool(tail) and ivr.classify_tail(tail) != "unknown"
+    # Only answered/voicemail are genuinely terminal from a keyword match --
+    # hearing hold language ("will be with you momentarily") is current
+    # status, not a resolution. Treating it as conclusive hangs up the
+    # instant hold is detected, never giving the rest of the 60s budget a
+    # chance for a human to actually join. Per spec, extended_hold is ONLY
+    # reached by exhausting the master timer with no real resolution.
+    tail_class = ivr.classify_tail(tail) if tail else "unknown"
+    conclusive = tail_class in ("answered", "voicemail")
     over_budget = STORE.seconds_since_answered(call_sid) >= CFG.ivr_master_timeout_seconds - 3
     if conclusive or over_budget:
         _resolve(call_sid)
