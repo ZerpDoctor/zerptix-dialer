@@ -248,7 +248,11 @@ def http_dialer(phone: str, *, window: str, local_date_iso: str, from_number: st
     """Place a call via the running server's /calls endpoint, telling it to
     record the attempt on the company's Queue row under its write lock.
     Returns the CallSid, or raises Skipped / DialError."""
-    url = f"http://127.0.0.1:{CFG.port}/calls"
+    # NOT localhost: on Railway, worker and dialer-web are separate containers,
+    # so 127.0.0.1 inside worker refers to itself, not dialer-web. PUBLIC_BASE_URL
+    # is already required/set on both services (it's how webhooks get built too),
+    # so route through it instead of assuming same-machine deployment.
+    url = CFG.callback_url("calls")
     payload = {
         "to_number": phone,
         "record_attempt": True,
