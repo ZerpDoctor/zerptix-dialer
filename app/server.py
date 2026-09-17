@@ -398,25 +398,20 @@ def ivr_turn(stage: str, level: int) -> Response:
         _resolve(call_sid)
         return _twiml("<Hangup/>")
 
-    # 2. AMD said 'human' before we pressed anything and it doesn't look like a
-    #    menu -> trust it (false-positive safety net). Requires >=2 gather
-    #    cycles first: a longer scripted business greeting (marketing copy,
-    #    hours, THEN "press 4 for...") doesn't look like a menu on its first
-    #    fragment either -- resolving on turn 1 alone cut calls off before the
-    #    real menu instruction, buried later in the message, was ever heard
-    #    (confirmed real incidents 2026-09-16: ACR, Bravado Group). A genuine
-    #    human greeting is still resolved fast -- it naturally produces an
-    #    empty follow-up turn almost immediately, satisfying gather_count>=2
-    #    within one extra ~5s cycle, not a real delay.
-    if (
-        (rec.answered_by or "").lower() == "human"
-        and not rec.digits_sent
-        and rec.gather_count >= 2
-        and not ivr.looks_like_menu(rec.transcript_accum).is_menu
-    ):
-        STORE.update(call_sid, resolve_note="AMD=human before any menu; treated as answered")
-        _resolve(call_sid)
-        return _twiml("<Hangup/>")
+    # NOTE: there used to be a step 2 here -- "AMD said human, no menu yet,
+    # no digits pressed -> trust it and resolve immediately." Removed
+    # entirely 2026-09-17: it fired on turn 1 or 2 of ANY call, before a
+    # longer scripted greeting (marketing copy, hours, THEN "press 9 for...")
+    # had a real chance to reveal its menu. A gather_count>=2 threshold was
+    # tried first and still resolved too early (confirmed live against
+    # Railway: hung up on turn 2 of a 6-turn test, nowhere near the digit
+    # instruction on turn 6). _conclude_not_menu() below already resolves
+    # correctly on a genuinely empty turn or the gather-cycle cap using the
+    # exact same AMD verdict -- that is the right point for this decision,
+    # not an early guess based on a partial fragment. A live human is barely
+    # slower this way: their own silence naturally produces an empty turn
+    # almost immediately, which resolves the same way, just at the correct
+    # moment instead of a preemptive one.
 
     empty = speech == ""
 
