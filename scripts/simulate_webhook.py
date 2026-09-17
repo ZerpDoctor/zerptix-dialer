@@ -162,6 +162,25 @@ CALL_SCENARIOS: dict[str, dict] = {
         "expect_flagged": False,
         "expect_outcome": "answered",
     },
+    # --- alt_miss (2026-09-17): redirect to a different contact channel -----
+    "alt_miss_text_emergency": {
+        "speech": [
+            "thank you for calling if this is an emergency please text this number for a faster response",
+        ],
+        "expect_digits": [],
+        "expect_outcome": "alt_miss",
+    },
+    # Same "text this number" phrase as above, but WITH a real digit-press
+    # option this time -- must go through normal IVR navigation, NOT alt_miss.
+    "alt_contact_with_digit": {
+        "speech": [
+            "you can also text this number for updates. press 1 for our office, press 2 for billing",
+            "front office, this is Pat, how can I help you",
+        ],
+        "expect_digits": ["1"],
+        "expect_flagged": False,
+        "expect_outcome": "answered",
+    },
     # --- transcript-vs-AMD reconciliation (2026-09-14 incident regression) ---
     # AMD's fast Enable-mode "machine_start" is not reliable -- confirmed live
     # tonight, it misclassified real human pickups as voicemail. The transcript

@@ -177,6 +177,11 @@ def _compute_outcome(rec) -> tuple[str, str]:
         # _build_row (same pattern as rec.ivr_reasoning), not duplicated here.
         return "gatekeeping_miss", ""
 
+    if rec.alt_contact_detected:
+        # reasoning goes into the row via rec.alt_contact_reasoning in
+        # _build_row, not duplicated here.
+        return "alt_miss", ""
+
     if rec.hit_time_cap:
         # A transcript captured before the timer expired is real evidence and
         # outranks the blunt "ran out of time" fallback -- confirmed real
@@ -229,6 +234,8 @@ def _build_row(rec, outcome: str, note: str) -> dict:
         notes.append(f"ivr: {rec.ivr_reasoning}")
     if rec.gatekeeping_reasoning:
         notes.append(f"gatekeeping: {rec.gatekeeping_reasoning}")
+    if rec.alt_contact_reasoning:
+        notes.append(f"alt_contact: {rec.alt_contact_reasoning}")
     if CFG.test_mode:
         notes.append("TEST_MODE")
     now_utc = datetime.now(timezone.utc)
@@ -255,6 +262,7 @@ def _build_row(rec, outcome: str, note: str) -> dict:
         "classifier": rec.classifier,
         "ivr_transcript": rec.transcript_accum[:5000],
         "from_number": rec.from_number or request.form.get("From", ""),
+        "needs_ai_copy": "yes" if outcome == "alt_miss" else "no",
     }
 
 
@@ -282,9 +290,20 @@ def _update_queue_row(rec, outcome: str) -> None:
 
 
 def _resolve(call_sid: str, hangup: bool = True) -> None:
+    """Confirmed real incident: a plain human pickup took ~25s to hang up --
+    all spent on a real Anthropic call plus 2-3 Google Sheets round-trips
+    (Calls append, Queue read, Queue write) happening BEFORE hang_up(),
+    while the caller sat on a connected, silent line the whole time.
+    hang_up() needs nothing from that work -- just the call_sid -- so it now
+    fires first, immediately after the idempotency check. This does not
+    change WHEN a call is resolved (that logic is untouched); it only
+    changes what happens mechanically once resolution has already been
+    decided."""
     if not STORE.mark_logged(call_sid):
         log.info("call_sid=%s already logged; ignoring duplicate", call_sid)
         return
+    if hangup:
+        hang_up(call_sid)
     rec = STORE.get(call_sid)
     outcome, note = _compute_outcome(rec)
     _write_sheet_with_retry(_build_row(rec, outcome, note))
@@ -295,8 +314,6 @@ def _resolve(call_sid: str, hangup: bool = True) -> None:
         ",".join(rec.digits_sent) or "-", rec.classifier, rec.ivr_fallback_flagged,
     )
     _update_queue_row(rec, outcome)
-    if hangup:
-        hang_up(call_sid)
 
 
 # --------------------------------------------------------------------------- #
@@ -453,7 +470,22 @@ def ivr_turn(stage: str, level: int) -> Response:
                 gatekeeping.reasoning,
             )
 
-    if menu_look.is_menu or (gatekeeping and gatekeeping.has_digit_option):
+    # 4. Alternative-contact-method check (text/email/website redirect) -- same
+    # not-a-menu-yet gate as gatekeeping, so a real digit-press option (even
+    # one that also mentions a phone number or website) always takes priority.
+    alt_contact = None
+    if CFG.gatekeeping_detection_enabled and not menu_look.is_menu:
+        ac_look = ivr.looks_like_alt_contact(segment)
+        if ac_look.is_alt_contact:
+            alt_contact = ivr.decide_alt_contact(segment)
+            log.info(
+                "Alt-contact check call_sid=%s is_alt_contact=%s has_digit=%s (%s)",
+                call_sid, alt_contact.is_alt_contact, alt_contact.has_digit_option,
+                alt_contact.reasoning,
+            )
+
+    if menu_look.is_menu or (gatekeeping and gatekeeping.has_digit_option) \
+            or (alt_contact and alt_contact.has_digit_option):
         decision = ivr.decide_digit(segment)
 
         if decision.is_menu:
@@ -496,7 +528,13 @@ def ivr_turn(stage: str, level: int) -> Response:
         _resolve(call_sid)
         return _twiml("<Hangup/>")
 
-    # Not (yet) a menu (or a vetoed false-positive), not gatekeeping.
+    if alt_contact and alt_contact.is_alt_contact and not alt_contact.has_digit_option:
+        log.info("Alt-contact redirect detected call_sid=%s: %s", call_sid, alt_contact.reasoning)
+        STORE.mark_alt_contact(call_sid, alt_contact.classifier, alt_contact.reasoning)
+        _resolve(call_sid)
+        return _twiml("<Hangup/>")
+
+    # Not (yet) a menu (or a vetoed false-positive), not gatekeeping, not alt-contact.
     if empty:
         return _conclude_not_menu(call_sid, rec)
     if rec.gather_count >= CFG.ivr_max_gather_cycles:

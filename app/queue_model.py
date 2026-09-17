@@ -43,7 +43,8 @@ STATUS_CONFIRMED_COVERED = "confirmed_covered"
 # Outcomes that count as a "usable miss" for the quarter (spec section 7): stop
 # attempting this company once any of these is logged. Note ivr_unresolved and
 # unknown are deliberately NOT here -- an inconclusive call is not evidence.
-MISS_OUTCOMES = {"voicemail", "extended_hold", "no_answer", "busy", "disconnected", "gatekeeping_miss"}
+MISS_OUTCOMES = {"voicemail", "extended_hold", "no_answer", "busy", "disconnected",
+                  "gatekeeping_miss", "alt_miss"}
 COVERED_OUTCOMES = {"answered"}
 # A single answered call is not decisive (unlike a single miss) -- only after
 # this many CONSECUTIVE answered outcomes in the same quarter, with no miss in

@@ -46,6 +46,12 @@ HEADER = [
     "ivr_levels",
     "digits_sent",
     "classifier",
+    # Appended at the END 2026-09-17, not inserted mid-row, so existing column
+    # positions (and anything downstream -- Clay export included -- reading by
+    # position) don't shift. Deliberately visible, not tucked into the hidden
+    # block above: "yes" on alt_miss rows means the transcript needs a custom
+    # AI-generated email line, not a fixed template sentence -- see decide_alt_contact.
+    "needs_ai_copy",
 ]
 
 

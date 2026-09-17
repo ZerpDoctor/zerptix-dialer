@@ -40,6 +40,8 @@ class CallRecord:
     resolve_note: str = ""
     gatekeeping_detected: bool = False
     gatekeeping_reasoning: str = ""
+    alt_contact_detected: bool = False
+    alt_contact_reasoning: str = ""
 
 
 class CallStore:
@@ -136,6 +138,17 @@ class CallStore:
             rec = self._by_sid[call_sid]
             rec.gatekeeping_detected = True
             rec.gatekeeping_reasoning = reasoning
+            rec.classifier = classifier
+            return rec
+
+    def mark_alt_contact(self, call_sid: str, classifier: str, reasoning: str) -> CallRecord:
+        """Automated redirect-to-a-different-contact-channel detected (text/
+        email/website, no digit path, no menu) -- distinct from gatekeeping
+        (which demands the caller's own info) and from ivr_detected."""
+        with self._lock:
+            rec = self._by_sid[call_sid]
+            rec.alt_contact_detected = True
+            rec.alt_contact_reasoning = reasoning
             rec.classifier = classifier
             return rec
 

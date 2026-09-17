@@ -51,6 +51,27 @@ _GATEKEEPING_SYSTEM = (
     'confidence ("high" or "low"), reasoning (short string).'
 )
 
+_ALT_CONTACT_SYSTEM = (
+    "You classify a single automated phone transcript for an outbound dialer. "
+    "The transcript may be imperfect speech-to-text and may include a recording "
+    "disclosure. Decide whether this is an AUTOMATED message instructing the "
+    "caller to use a DIFFERENT CONTACT CHANNEL entirely instead of connecting "
+    "them on this call -- e.g. 'please text this number', 'email us at...', "
+    "'visit our website', 'for immediate assistance please text/email/visit...'. "
+    "This is 'alt_miss': the call itself was never going to connect the caller "
+    "to anyone, regardless of what they do next. "
+    "It is NOT alt_miss if: (a) the prompt offers any digit to press ('press 1 "
+    "for...', 'dial 2 to...') -- that is a normal menu, set has_digit_option "
+    "true and is_alt_contact false, even if a phone number, text line, or "
+    "website is ALSO mentioned; (b) this is a request for the CALLER's own "
+    "information (zip code, account number, name) -- that is gatekeeping, a "
+    "different category, not alt_contact; (c) this sounds like natural live-"
+    "human conversation rather than a scripted/robotic prompt. When genuinely "
+    "unsure, prefer confidence low. Reply with ONLY a JSON object, no prose, "
+    "with keys: is_alt_contact (bool), has_digit_option (bool), "
+    'confidence ("high" or "low"), reasoning (short string).'
+)
+
 _CALL_AUDIO_SYSTEM = (
     "You classify what actually happened on an outbound phone call for a dialer, "
     "based on a transcript captured after the call connected (no digit-menu was "
@@ -173,6 +194,26 @@ def classify_gatekeeping(transcript: str) -> dict:
 
     return {
         "is_gatekeeping": bool(data.get("is_gatekeeping")),
+        "has_digit_option": bool(data.get("has_digit_option")),
+        "confidence": str(data.get("confidence", "low")).lower(),
+        "reasoning": str(data.get("reasoning", ""))[:300],
+    }
+
+
+def classify_alt_contact(transcript: str) -> dict:
+    """Returns {is_alt_contact, has_digit_option, confidence, reasoning}.
+    Raises AnthropicUnavailable on any problem -- same reasoning as
+    classify_gatekeeping: a false positive hangs up and burns the quarter's
+    remaining attempts, so an unavailable classifier means "not alt_contact",
+    not a keyword-only guess.
+    """
+    data = _call_haiku(_ALT_CONTACT_SYSTEM, transcript)
+
+    if "is_alt_contact" not in data:
+        raise AnthropicUnavailable(f"reply missing 'is_alt_contact': {data!r}")
+
+    return {
+        "is_alt_contact": bool(data.get("is_alt_contact")),
         "has_digit_option": bool(data.get("has_digit_option")),
         "confidence": str(data.get("confidence", "low")).lower(),
         "reasoning": str(data.get("reasoning", ""))[:300],

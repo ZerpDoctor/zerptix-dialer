@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from . import outcomes
 from .anthropic_client import (
     AnthropicUnavailable,
+    classify_alt_contact,
     classify_call_audio,
     classify_gatekeeping,
     classify_ivr_digit,
@@ -119,6 +120,22 @@ _GATEKEEPING_PHRASES = [
     "your verification code", "your full name and", "the reason for your call",
     "the reason you're calling", "reason for calling", "state your name",
     "say your name", "spell your last name", "spell your name",
+]
+
+# An automated message redirecting the caller to a DIFFERENT contact channel
+# entirely (text, email, website) instead of connecting them on this call --
+# distinct from gatekeeping (which demands the caller's own info) and from a
+# normal menu (which offers a digit to press within this same call). Same
+# "single hit is enough to warrant Haiku confirmation" reasoning as gatekeeping.
+_ALT_CONTACT_PHRASES = [
+    "please text", "text this number", "text us at", "text the word",
+    "send us a text", "you can text", "reach us by text",
+    "email us at", "send us an email", "you can email", "email address is",
+    "reach us at our email", "for a faster response please email",
+    "visit our website", "go to our website", "check out our website",
+    "visit us online", "visit us at", "check us out at", "find us online",
+    "for immediate assistance please visit", "for immediate assistance please text",
+    "for immediate assistance please email",
 ]
 
 _TAIL_HOLD = [
@@ -224,6 +241,54 @@ def decide_gatekeeping(transcript: str) -> GatekeepingDecision:
                                    f"haiku: low confidence ({h['reasoning']})")
 
     return GatekeepingDecision(h["is_gatekeeping"], h["has_digit_option"], "haiku", h["reasoning"])
+
+
+# --- alternative-contact-method detection (distinct from menu/gatekeeping) --
+
+@dataclass
+class AltContactLook:
+    is_alt_contact: bool
+    matched: list[str]
+
+
+@dataclass
+class AltContactDecision:
+    is_alt_contact: bool
+    has_digit_option: bool
+    classifier: str  # "haiku" | "none" (never "keyword_fallback" -- see decide_alt_contact)
+    reasoning: str
+
+
+def looks_like_alt_contact(transcript: str) -> AltContactLook:
+    """Cheap keyword pre-filter, only ever consulted by the caller AFTER
+    looks_like_menu() has already said this is NOT a menu -- so a real digit-
+    press option always takes priority before this is even considered."""
+    t = (transcript or "").lower()
+    if not t.strip():
+        return AltContactLook(False, [])
+    matched = [p for p in _ALT_CONTACT_PHRASES if p in t]
+    return AltContactLook(bool(matched), matched)
+
+
+def decide_alt_contact(transcript: str) -> AltContactDecision:
+    """Haiku-confirmed only -- deliberately NO keyword-only fallback path,
+    same asymmetric-risk reasoning as decide_gatekeeping: a false positive
+    hangs up and burns the company's remaining attempts for the quarter
+    (confirmed_miss), while a false negative just falls through to the
+    existing (already-safe) non-menu/AMD handling.
+    """
+    try:
+        h = classify_alt_contact(transcript)
+    except AnthropicUnavailable as e:
+        log.error("ANTHROPIC API ERROR (check billing / key): %s", e)
+        return AltContactDecision(False, False, "none",
+                                  f"anthropic unavailable ({e}); not treated as alt_miss")
+
+    if h["confidence"] != "high":
+        return AltContactDecision(False, h["has_digit_option"], "haiku",
+                                  f"haiku: low confidence ({h['reasoning']})")
+
+    return AltContactDecision(h["is_alt_contact"], h["has_digit_option"], "haiku", h["reasoning"])
 
 
 # --- digit options parsing ---------------------------------------------------

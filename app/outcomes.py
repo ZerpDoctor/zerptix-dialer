@@ -2,11 +2,19 @@
 
 Taxonomy used so far:
   answered / voicemail / no_answer / busy / disconnected / extended_hold /
-  ivr_unresolved / unknown
+  ivr_unresolved / unknown / gatekeeping_miss / alt_miss
 
 `unknown` and `ivr_unresolved` are deliberate: per spec section 4, an honestly
 flagged "we couldn't tell" is better than a guessed outcome that silently
 corrupts the coverage data.
+
+gatekeeping_miss vs alt_miss: gatekeeping_miss is an automated prompt demanding
+the CALLER's own information (zip code, account number, name) with no digit
+escape -- a dead end because there's nothing to give it. alt_miss is an
+automated message redirecting the caller to a DIFFERENT CONTACT CHANNEL
+entirely (text, email, website) instead of connecting them on this call -- a
+dead end not because it wants information, but because this call itself was
+never going to connect them. Both are decisive misses with no digit path.
 """
 from __future__ import annotations
 
@@ -28,6 +36,7 @@ ALL_OUTCOMES = {
     "ivr_unresolved",
     "unknown",
     "gatekeeping_miss",
+    "alt_miss",
 }
 
 
