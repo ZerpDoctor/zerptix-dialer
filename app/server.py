@@ -178,6 +178,22 @@ def _compute_outcome(rec) -> tuple[str, str]:
         return "gatekeeping_miss", ""
 
     if rec.hit_time_cap:
+        # A transcript captured before the timer expired is real evidence and
+        # outranks the blunt "ran out of time" fallback -- confirmed real
+        # incident: Dry Source Property Restoration correctly pressed the
+        # emergency digit, the tail clearly captured voicemail language
+        # ("please leave your name number..."), but hitting the 60s cap right
+        # after discarded all of that and returned extended_hold without ever
+        # looking at what was actually heard.
+        cap_transcript = (
+            rec.transcript_accum[rec.transcript_at_last_digit:] if rec.ivr_detected
+            else rec.transcript_accum
+        ).strip()
+        if cap_transcript:
+            decision = ivr.decide_tail(cap_transcript, rec.answered_by)
+            if decision.outcome != "unknown":
+                note = f"tail: {decision.reasoning}" if decision.reasoning else ""
+                return decision.outcome, note
         return "extended_hold", "hit 60s master timer with no resolution"
 
     if rec.ivr_detected and not rec.digits_sent:
