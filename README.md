@@ -81,6 +81,18 @@ is touched.
   quarter's remaining attempts, so an unavailable/low-confidence classifier
   means "not gatekeeping", not a guess). Resolves to `gatekeeping_miss` — same
   quarter effect as `voicemail`. Kill switch: `GATEKEEPING_DETECTION_ENABLED`.
+- **Alternative-contact redirect (distinct from gatekeeping):** an automated
+  message telling the caller to use a different channel entirely — "text this
+  number", "email us at...", "visit our website" — instead of connecting them
+  on this call, again with **no digit-press option**. Same not-a-menu-yet
+  priority slot, same Haiku-confirmed-only decision, same kill switch
+  (`GATEKEEPING_DETECTION_ENABLED`) as gatekeeping. The distinction:
+  gatekeeping demands the *caller's own* information; this redirects them to
+  a *different channel*, not asking for anything. Resolves to `alt_miss` —
+  same quarter effect as `voicemail`/`gatekeeping_miss`. Rows also get
+  `needs_ai_copy=yes`, since alt_miss wording varies far more than voicemail
+  or gatekeeping phrasing — flagged for a custom-generated email line
+  downstream, not a fixed template sentence.
 
 - **Language:** Python 3.12, Flask + Gunicorn.
 - **Google auth:** keyless OAuth. No service-account JSON key (blocked by org
@@ -240,6 +252,8 @@ each `<Play digits>`):
 | `ivr_unresolved_tail` | menu navigated but the party reached can't be auto-classified → `ivr_unresolved`, flagged |
 | `gatekeeping_zip_code` | automated prompt asks for a zip code, no digit option → hangs up, `gatekeeping_miss` |
 | `ivr_account_info_with_digit` | mentions "your account number" but DOES offer a digit → normal IVR navigation, NOT gatekeeping (priority-order regression check) |
+| `alt_miss_text_emergency` | automated message redirects to texting a number, no digit option → hangs up, `alt_miss`, `needs_ai_copy=yes` |
+| `alt_contact_with_digit` | mentions "text this number" but DOES offer a digit → normal IVR navigation, NOT alt_miss (priority-order regression check) |
 
 > **Testing the Haiku path.** With a placeholder or missing `ANTHROPIC_API_KEY`,
 > every scenario runs the **keyword-priority fallback** (and logs the loud
@@ -261,6 +275,7 @@ each `<Play digits>`):
 | `extended_hold` | Navigate a menu into hold music / silence, or don't resolve within 60 s |
 | `ivr_unresolved` | Menu navigated but the audio after it isn't a clear human/voicemail — check the recording |
 | `gatekeeping_miss` | An automated prompt asks for identifying info (zip code, account number, name, reason for calling) with no digit-press option -- hangs up immediately, same quarter effect as `voicemail` |
+| `alt_miss` | An automated message redirects to a different contact channel (text, email, website) instead of connecting the caller on this call, with no digit-press option -- hangs up immediately, same quarter effect as `voicemail`/`gatekeeping_miss`. Row also gets `needs_ai_copy=yes` |
 
 `unknown` (call completed but no signal gave a usable read) rounds out the full outcome list; it isn't something you'd deliberately provoke.
 
@@ -429,7 +444,7 @@ account.
 | `PORT` | Local server port. Default `8080` |
 | `IVR_MAX_GATHER_CYCLES` | Max `<Gather>` cycles before giving up "listening through". Default `5` |
 | `IVR_SPEECH_MODEL` / `IVR_INITIAL_TIMEOUT_SECONDS` / `IVR_TAIL_GATHER_SECONDS` | Speech-recognition tuning; defaults are fine |
-| `GATEKEEPING_DETECTION_ENABLED` | Default `true`. Kill switch for digital-gatekeeping detection (`gatekeeping_miss`) -- set `false` to disable instantly without a code rollback |
+| `GATEKEEPING_DETECTION_ENABLED` | Default `true`. Kill switch for digital-gatekeeping detection (`gatekeeping_miss`) AND alternative-contact-redirect detection (`alt_miss`) -- shares one flag, set `false` to disable both instantly without a code rollback |
 | `SCHED_QUEUE_TAB` | Per-company state tab. Default `Queue` |
 | `SCHED_EVENING_WINDOW` / `SCHED_DEEP_NIGHT_WINDOW` | Local calling windows, `HH:MM-HH:MM`. Defaults `21:30-22:30` / `02:00-04:00` |
 | `SCHED_CALLING_DAYS` | Default `Sun,Mon,Tue,Wed,Thu` |
