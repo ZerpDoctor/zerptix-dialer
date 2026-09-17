@@ -514,6 +514,21 @@ def _conclude_not_menu(call_sid: str, rec) -> Response:
 
     STORE.update(call_sid, phase="awaiting_amd")
     if rec.answered_by:  # AMD verdict already buffered
+        # A bare AMD verdict plus a transcript that only sounds like hold or
+        # transfer language ("connecting you now") is not a real resolution --
+        # it's mid-flight status, same as the tail-wait fix. Confirmed real
+        # incident: Aaa Disaster Recovery got cut off at 18 seconds on exactly
+        # this pattern, never given a chance for a live person to join.
+        # Only a clear answered/voicemail transcript verdict (or no
+        # transcript at all -- then AMD is all we have) resolves early here;
+        # anything else keeps listening, bounded by the outer master timer.
+        transcript = rec.transcript_accum.strip()
+        if transcript:
+            decision = ivr.decide_tail(transcript, rec.answered_by)
+            if decision.outcome in ("answered", "voicemail"):
+                _resolve(call_sid)
+                return _twiml("<Hangup/>")
+            return _twiml(_gather("menu", 0, CFG.ivr_tail_gather_seconds))
         _resolve(call_sid)
         return _twiml("<Hangup/>")
     # Hand off to AMD: hold the line for the remaining budget, then hang up. If
