@@ -141,7 +141,10 @@ CALL_SCENARIOS: dict[str, dict] = {
             "",
         ],
         "expect_digits": ["1"],
-        "expect_outcome": "ivr_unresolved",
+        # Was "ivr_unresolved" before the 2-turn early-resolve fix. "yeah hang on"
+        # is colloquial live-human speech, so the 2nd non-empty turn now confidently
+        # resolves it as "answered" -- correctly, and sooner than before.
+        "expect_outcome": "answered",
     },
     # --- digital gatekeeping (distinct from IVR menu navigation) ---
     "gatekeeping_zip_code": {
