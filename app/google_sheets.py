@@ -160,6 +160,32 @@ def backfill_call_status(call_sid: str, call_status: str, duration_sec: str = ""
     return False
 
 
+def call_sid_already_logged(call_sid: str) -> bool:
+    """True if a row for this call_sid already exists in the results tab.
+
+    Confirmed real incident 2026-09-17/18: a Railway redeploy mid-batch wiped
+    the dialer-web process's in-memory CallStore. SignalWire's terminal status
+    callback for calls that had already resolved (and logged) just before the
+    restart then arrived at the fresh process, which had no memory of them --
+    it treated each as brand new, computed a blank "unknown" outcome, and
+    wrote a second, data-poor duplicate row (while also double-counting a
+    Queue attempt for the same real call). The Sheet itself is the only
+    durable source of truth across a restart, so this is checked before
+    trusting a record this process has no history for. Only the call_sid
+    column is read to keep this cheap.
+    """
+    svc = _service()
+    col = col_letter(HEADER.index("call_sid"))
+    existing = (
+        svc.spreadsheets()
+        .values()
+        .get(spreadsheetId=CFG.sheet_id, range=f"{CFG.sheet_tab}!{col}2:{col}100000")
+        .execute()
+        .get("values", [])
+    )
+    return any(row and row[0] == call_sid for row in existing)
+
+
 def check_access() -> str:
     """Round-trip the Sheets API to confirm auth + access. Returns the sheet title."""
     svc = _service()

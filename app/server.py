@@ -289,7 +289,7 @@ def _update_queue_row(rec, outcome: str) -> None:
         log.warning("Queue write-back failed for %s: %s", rec.call_sid, e)
 
 
-def _resolve(call_sid: str, hangup: bool = True) -> None:
+def _resolve(call_sid: str, hangup: bool = True, recovered: bool = False) -> None:
     """Confirmed real incident: a plain human pickup took ~25s to hang up --
     all spent on a real Anthropic call plus 2-3 Google Sheets round-trips
     (Calls append, Queue read, Queue write) happening BEFORE hang_up(),
@@ -298,10 +298,34 @@ def _resolve(call_sid: str, hangup: bool = True) -> None:
     fires first, immediately after the idempotency check. This does not
     change WHEN a call is resolved (that logic is untouched); it only
     changes what happens mechanically once resolution has already been
-    decided."""
+    decided.
+
+    `recovered=True` means the caller detected this process had no in-memory
+    record for call_sid before its own upsert just created one -- i.e. this
+    is very likely a restart-recovered stub, not a call this process has any
+    real history for. Confirmed real incident 2026-09-17/18: a redeploy mid-
+    batch wiped in-memory state; SignalWire's terminal status callback for
+    calls already resolved just before the restart then landed on the fresh
+    process and got logged a second time, blank, with a phantom Queue
+    attempt. When recovered, check the Sheet (durable across restarts)
+    before trusting a blank record."""
     if not STORE.mark_logged(call_sid):
         log.info("call_sid=%s already logged; ignoring duplicate", call_sid)
         return
+    if recovered:
+        try:
+            already_in_sheet = google_sheets.call_sid_already_logged(call_sid)
+        except Exception as e:  # noqa: BLE001 - never block resolution on this check
+            log.warning("Duplicate-check against Sheet failed for %s: %s; proceeding", call_sid, e)
+            already_in_sheet = False
+        if already_in_sheet:
+            log.warning(
+                "call_sid=%s already in Sheet after process restart; "
+                "skipping duplicate log/Queue update", call_sid,
+            )
+            if hangup:
+                hang_up(call_sid)
+            return
     if hangup:
         hang_up(call_sid)
     rec = STORE.get(call_sid)
@@ -682,6 +706,13 @@ def webhook_status() -> Response:
     call_sid = request.form.get("CallSid", "")
     call_status = (request.form.get("CallStatus") or "").strip()
     duration = request.form.get("CallDuration", "")
+    # Captured BEFORE the upsert below creates a record: True only if this
+    # process has never seen call_sid in any capacity (not placed by it, no
+    # earlier /ivr/turn or /webhooks/amd for it) -- the signal that a restart,
+    # not a normal never-answered call, is why nothing is known about it. A
+    # normal never-answered call already has a record from place_call's own
+    # STORE.register() at dial time, so this stays False for it.
+    recovered = STORE.get(call_sid) is None
     STORE.update(call_sid, call_status=call_status, to_number=request.form.get("To") or None)
     rec = STORE.get(call_sid)
     log.info(
@@ -702,10 +733,10 @@ def webhook_status() -> Response:
 
     s = call_status.lower()
     if s in ("busy", "no-answer", "failed", "canceled"):
-        _resolve(call_sid, hangup=False)
+        _resolve(call_sid, hangup=False, recovered=recovered)
     elif s == "completed":
         # Call ended -- resolve with whatever signals we have.
-        _resolve(call_sid, hangup=False)
+        _resolve(call_sid, hangup=False, recovered=recovered)
     return Response("", status=204)
 
 
