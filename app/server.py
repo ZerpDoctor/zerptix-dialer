@@ -540,6 +540,26 @@ def ivr_turn(stage: str, level: int) -> Response:
     if rec.gather_count >= CFG.ivr_max_gather_cycles:
         log.info("IVR gather cap reached call_sid=%s; concluding not-a-menu", call_sid)
         return _conclude_not_menu(call_sid, rec)
+
+    # Fast hangup for a genuine live pickup: a confident "answered" verdict on
+    # real (non-empty) speech resolves now, once at least 2 non-empty turns
+    # have been heard. Never trusted on turn 1 alone -- confirmed a scripted
+    # voicemail opening exactly like "hi this is Mike... how can I help you"
+    # also reads as confidently answered by itself, only revealing itself once
+    # "please leave your name and number" arrives on a later turn. A live
+    # human reacting to silence with a second prompt is not something a
+    # static recording can fake the same way. Never trusts an early
+    # voicemail/unknown verdict here either -- same asymmetry as hit_time_cap
+    # and _conclude_not_menu: a scripted message can still be leading into a
+    # real menu or reveal itself as voicemail later.
+    if rec.gather_count >= 2:
+        early = ivr.decide_tail(segment, rec.answered_by)
+        if early.outcome == "answered":
+            log.info("IVR early-resolve call_sid=%s: confident answered on turn %d (%s)",
+                      call_sid, rec.gather_count, early.reasoning)
+            _resolve(call_sid)
+            return _twiml("<Hangup/>")
+
     # Keep listening through non-actionable speech (the menu instruction may be
     # at the tail end of a longer disclosure).
     return _twiml(_gather("menu", level, CFG.ivr_tail_gather_seconds))
