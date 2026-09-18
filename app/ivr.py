@@ -404,6 +404,28 @@ def decide_digit(transcript: str) -> Decision:
 
     if h["digit"] is None:
         pick = choose_digit_by_priority(transcript)
+        if pick.digit is None or pick.reason == "no emergency/representative option; took lowest offered digit":
+            # Both Haiku and keyword-priority came up with nothing but "just
+            # press something" -- the exact scenario that pressed a voicemail
+            # system's OWN recording-review controls in two confirmed real
+            # incidents with different wording each time (Cooks Proclean And
+            # Restoration; Blumer Restoration: pressed "1" into "to disconnect
+            # press 1 to record your message press 2", landing on
+            # extended_hold instead of the true voicemail outcome).
+            # Phrase-blocklisting _VOICEMAIL_CONTROL_PHRASES doesn't
+            # generalize to new wording (confirmed twice), but this signal
+            # does: when NEITHER a semantic read (Haiku) NOR a keyword
+            # priority scan (emergency/reach-a-person) can find any
+            # business-relevant reason to press a specific digit, guessing
+            # the lowest one anyway is exactly what goes wrong. Don't press
+            # blind -- fall through to keep-listening, same as a Haiku veto;
+            # a real menu with a genuine emergency/reach-a-person option
+            # never reaches this branch (Lanier's "press 4 for emergency"
+            # menu is caught above, before this point).
+            return Decision(False, None, "haiku", False,
+                            f"haiku saw menu structure but found no safely-groundable digit, "
+                            f"and keyword-priority found no emergency/representative signal "
+                            f"either; not pressing blind ({h['reasoning']})")
         return Decision(True, pick.digit, "keyword_fallback", True,
                         f"haiku saw a menu but no digit; {pick.reason}")
 

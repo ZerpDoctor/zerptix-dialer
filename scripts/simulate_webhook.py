@@ -184,6 +184,23 @@ CALL_SCENARIOS: dict[str, dict] = {
         "expect_flagged": False,
         "expect_outcome": "answered",
     },
+    # --- voicemail-controls-not-a-menu, third confirmed instance (2026-09-17
+    # Blumer Restoration incident: pressed digit "1" into "to disconnect
+    # press 1 to record your message press 2", landing on extended_hold
+    # instead of voicemail). Different wording each time this bug has hit
+    # (E F Yates, Cooks Proclean, Blumer), so this regresses the general
+    # "don't guess a digit when neither Haiku nor keyword-priority can find
+    # a business-relevant reason to press one" fix, not a phrase blocklist.
+    "voicemail_control_menu_not_navigated": {
+        "speech": [
+            "we didn't get your message either because you were not speaking or "
+            "because of a bad connection to disconnect press 1 to record your "
+            "message press 2",
+            "",
+        ],
+        "expect_digits": [],
+        "expect_outcome": "voicemail",
+    },
     # --- transcript-vs-AMD reconciliation (2026-09-14 incident regression) ---
     # AMD's fast Enable-mode "machine_start" is not reliable -- confirmed live
     # tonight, it misclassified real human pickups as voicemail. The transcript
