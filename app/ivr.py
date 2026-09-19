@@ -127,6 +127,13 @@ _GATEKEEPING_PHRASES = [
 # distinct from gatekeeping (which demands the caller's own info) and from a
 # normal menu (which offers a digit to press within this same call). Same
 # "single hit is enough to warrant Haiku confirmation" reasoning as gatekeeping.
+# Also covers two confirmed real dead-end patterns that don't fit the
+# text/email/website mold but are the same underlying problem -- this call
+# will not connect the caller to anyone, regardless of what they do next:
+# (a) Google Voice / personal call-screening ("state your name, ... will try
+# to connect you") -- a SEPARATE screening step decides whether to connect
+# later, not this call; (b) a company directory that dead-ends on requiring
+# an extension the caller has no way of knowing, with no fallback option.
 _ALT_CONTACT_PHRASES = [
     "please text", "text this number", "text us at", "text the word",
     "send us a text", "you can text", "reach us by text",
@@ -136,6 +143,8 @@ _ALT_CONTACT_PHRASES = [
     "visit us online", "visit us at", "check us out at", "find us online",
     "for immediate assistance please visit", "for immediate assistance please text",
     "for immediate assistance please email",
+    "will try to connect you", "try to connect you", "trying to connect you",
+    "know your party's extension", "know the extension", "your party's extension",
 ]
 
 _TAIL_HOLD = [

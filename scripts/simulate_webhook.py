@@ -184,6 +184,49 @@ CALL_SCENARIOS: dict[str, dict] = {
         "expect_flagged": False,
         "expect_outcome": "answered",
     },
+    # --- alt_miss expansion (2026-09-18): two confirmed dead-end patterns
+    # that don't mention text/email/website but are the same underlying
+    # problem -- the call will not connect regardless of what the caller
+    # does next. Real incidents: Newton Fire And Flood (Google Voice
+    # screening) and Able Builders (extension-only directory).
+    "alt_miss_google_voice_screening": {
+        "speech": [
+            "hello please state your name after the tone and Google Voice will try to connect you",
+        ],
+        "expect_digits": [],
+        "expect_outcome": "alt_miss",
+    },
+    "alt_miss_extension_dead_end": {
+        "speech": [
+            "calling Abel builders know your party's extension please dial it now",
+        ],
+        "expect_digits": [],
+        "expect_outcome": "alt_miss",
+    },
+    # Same extension-directory pattern, but WITH an escape digit (press 0 for
+    # operator) -- must go through normal IVR navigation, NOT alt_miss.
+    "extension_directory_with_operator_digit": {
+        "speech": [
+            "thank you for calling. if you know your party's extension please dial it now, or press 0 for the operator",
+            "front desk, this is Amy, how can I help you",
+        ],
+        "expect_digits": ["0"],
+        "expect_flagged": False,
+        "expect_outcome": "answered",
+    },
+    # --- live-human-screening misclassified as voicemail (2026-09-18
+    # Biorestoration incident): present-tense "I'll see if..." is an active
+    # person physically present, not a scripted recording, even combined
+    # with a state-your-name instruction that alone could sound automated.
+    "live_human_screening_not_voicemail": {
+        "speech": [
+            "record your name and reason for calling I'll see if this person is available",
+            "",
+        ],
+        "amd": "machine_start",
+        "expect_digits": [],
+        "expect_outcome": "answered",
+    },
     # --- voicemail-controls-not-a-menu, third confirmed instance (2026-09-17
     # Blumer Restoration incident: pressed digit "1" into "to disconnect
     # press 1 to record your message press 2", landing on extended_hold
