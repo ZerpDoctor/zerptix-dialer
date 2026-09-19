@@ -172,6 +172,9 @@ class DigitPick:
     digit: str | None
     reason: str
     flagged: bool  # True whenever priority-fallback logic chose the digit
+    is_emergency: bool = False  # True only if THIS digit's own label is the
+    # emergency/after-hours option -- not just that emergency language
+    # appears somewhere else in the transcript for a different digit.
 
 
 # --- menu detection ------------------------------------------------------------
@@ -353,9 +356,12 @@ def choose_digit_by_priority(transcript: str) -> DigitPick:
     # 1. Emergency / after-hours anywhere in the menu.
     for digit, label in options:
         if any(w in label for w in _EMERGENCY_WORDS):
-            return DigitPick(digit, f"emergency/after-hours option ('{label.strip()}')", True)
+            return DigitPick(digit, f"emergency/after-hours option ('{label.strip()}')", True,
+                              is_emergency=True)
     if any(w in t for w in _EMERGENCY_WORDS):
         # Emergency language present but not clearly tied to one option -> lowest.
+        # is_emergency stays False -- the digit actually pressed is NOT confirmed
+        # to be the emergency option, just an arbitrary lowest-numbered one.
         digit = min(options, key=lambda o: _digit_sort_key(o[0]))[0]
         return DigitPick(digit, "emergency language present, not tied to one option; took lowest", True)
 
@@ -383,6 +389,9 @@ class Decision:
     classifier: str  # "haiku" | "keyword_fallback"
     flagged: bool
     reasoning: str
+    is_emergency_route: bool = False  # True only if THIS specific digit was
+    # chosen because it is the emergency/after-hours option -- not just that
+    # emergency language appears anywhere in the transcript.
 
 
 def decide_digit(transcript: str) -> Decision:
@@ -408,7 +417,8 @@ def decide_digit(transcript: str) -> Decision:
                             f"anthropic unavailable ({e}); keywords: not a menu")
         pick = choose_digit_by_priority(transcript)
         return Decision(True, pick.digit, "keyword_fallback", True,
-                        f"anthropic unavailable ({e}); {pick.reason}")
+                        f"anthropic unavailable ({e}); {pick.reason}",
+                        is_emergency_route=pick.is_emergency)
 
     # False-positive guard: Haiku not confident it's a menu -> treat as not a menu.
     if not h["is_menu"] or h["confidence"] != "high":
@@ -440,7 +450,8 @@ def decide_digit(transcript: str) -> Decision:
                             f"and keyword-priority found no emergency/representative signal "
                             f"either; not pressing blind ({h['reasoning']})")
         return Decision(True, pick.digit, "keyword_fallback", True,
-                        f"haiku saw a menu but no digit; {pick.reason}")
+                        f"haiku saw a menu but no digit; {pick.reason}",
+                        is_emergency_route=pick.is_emergency)
 
     # Grounding guard: Haiku's chosen digit must actually be one of the
     # structurally-parsed menu options. Without this, Haiku can select a
@@ -451,9 +462,11 @@ def decide_digit(transcript: str) -> Decision:
         pick = choose_digit_by_priority(transcript)
         return Decision(True, pick.digit, "keyword_fallback", True,
                         f"haiku chose digit {h['digit']!r} not grounded in any parsed menu "
-                        f"option (parsed: {sorted(valid_digits)}); {pick.reason}")
+                        f"option (parsed: {sorted(valid_digits)}); {pick.reason}",
+                        is_emergency_route=pick.is_emergency)
 
-    return Decision(True, h["digit"], "haiku", ambiguous, f"haiku: {h['reasoning']}")
+    return Decision(True, h["digit"], "haiku", ambiguous, f"haiku: {h['reasoning']}",
+                    is_emergency_route=h["is_emergency_option"])
 
 
 # --- tail classification ----------------------------------------------------

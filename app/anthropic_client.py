@@ -26,11 +26,17 @@ _SYSTEM = (
     "person for a business/service call -- preferring an emergency or after-hours "
     "option if one is offered, otherwise the option closest to 'speak to a "
     "representative' / 'current customer'. Never default to 1. "
+    "Also decide is_emergency_option: true ONLY if the digit you chose is itself "
+    "the option explicitly labeled as emergency/urgent/after-hours/24-hour/on-call "
+    "(e.g. 'press 1 for emergency service') -- false if you chose a different, "
+    "non-emergency option, even if the word 'emergency' appears somewhere else in "
+    "the transcript for a DIFFERENT digit than the one you chose, and false "
+    "whenever digit is null. "
     "Reply with ONLY a JSON object, no prose, with keys: "
     'is_menu (bool), digit (string like "1", "0", "*", "#", or null), '
     'confidence ("high" or "low"), clear_choice (bool: true only if one option '
     "is clearly correct; false if you had to guess among ambiguous options), "
-    "reasoning (short string)."
+    "is_emergency_option (bool), reasoning (short string)."
 )
 
 _GATEKEEPING_SYSTEM = (
@@ -186,8 +192,8 @@ def _call_haiku(system: str, transcript: str) -> dict:
 
 
 def classify_ivr_digit(transcript: str) -> dict:
-    """Returns {is_menu, digit, confidence, clear_choice, reasoning}.
-    Raises AnthropicUnavailable on any problem."""
+    """Returns {is_menu, digit, confidence, clear_choice, is_emergency_option,
+    reasoning}. Raises AnthropicUnavailable on any problem."""
     data = _call_haiku(_SYSTEM, transcript)
 
     if "is_menu" not in data:
@@ -204,6 +210,7 @@ def classify_ivr_digit(transcript: str) -> dict:
         "digit": digit,
         "confidence": str(data.get("confidence", "low")).lower(),
         "clear_choice": bool(data.get("clear_choice", False)),
+        "is_emergency_option": bool(data.get("is_emergency_option")) and digit is not None,
         "reasoning": str(data.get("reasoning", ""))[:300],
     }
 

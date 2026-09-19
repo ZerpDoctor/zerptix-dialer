@@ -254,6 +254,8 @@ each `<Play digits>`):
 | `ivr_account_info_with_digit` | mentions "your account number" but DOES offer a digit → normal IVR navigation, NOT gatekeeping (priority-order regression check) |
 | `alt_miss_text_emergency` | automated message redirects to texting a number, no digit option → hangs up, `alt_miss`, `needs_ai_copy=yes` |
 | `alt_contact_with_digit` | mentions "text this number" but DOES offer a digit → normal IVR navigation, NOT alt_miss (priority-order regression check) |
+| `emergency_route_then_voicemail` | menu with a real emergency option pressed, then voicemail → `routed_to_emergency_line=true`, `outcome=voicemail` |
+| `non_emergency_route_then_voicemail` | menu with only non-emergency options pressed, then voicemail → `routed_to_emergency_line=false`, `outcome=voicemail` |
 
 > **Testing the Haiku path.** With a placeholder or missing `ANTHROPIC_API_KEY`,
 > every scenario runs the **keyword-priority fallback** (and logs the loud
@@ -275,9 +277,27 @@ each `<Play digits>`):
 | `extended_hold` | Navigate a menu into hold music / silence, or don't resolve within 60 s |
 | `ivr_unresolved` | Menu navigated but the audio after it isn't a clear human/voicemail — check the recording |
 | `gatekeeping_miss` | An automated prompt asks for identifying info (zip code, account number, name, reason for calling) with no digit-press option -- hangs up immediately, same quarter effect as `voicemail` |
-| `alt_miss` | An automated message redirects to a different contact channel (text, email, website) instead of connecting the caller on this call, with no digit-press option -- hangs up immediately, same quarter effect as `voicemail`/`gatekeeping_miss`. Row also gets `needs_ai_copy=yes` |
+| `alt_miss` | An automated message redirects to a different contact channel (text, email, website) instead of connecting the caller on this call, with no digit-press option -- hangs up immediately, same quarter effect as `voicemail`/`gatekeeping_miss`. Row also gets `needs_ai_copy=yes`. Also covers automated call-screening (Google Voice or similar "I'll see if this person is available" / "will try to connect you") and dead-end company directories requiring an extension the caller has no way of knowing -- both are the same underlying dead end even though neither mentions text/email/website |
 
 `unknown` (call completed but no signal gave a usable read) rounds out the full outcome list; it isn't something you'd deliberately provoke.
+
+### `routed_to_emergency_line`
+
+A separate field alongside `outcome` (not a replacement for it): `true`, `false`,
+or `not_applicable`. `true` only when the IVR digit actually pressed was
+specifically the emergency/after-hours-labeled option (not just that the word
+"emergency" appears somewhere else in the transcript for a different option);
+`false` when a menu was navigated but the digit pressed was not the emergency
+option; `not_applicable` when no IVR menu was involved at all (plain pickup or
+a voicemail with no menu). For a multi-level menu, `true` if *any* digit in the
+navigation path was the emergency option, even if an earlier press wasn't.
+
+This combines with `outcome` for outreach prioritization -- `true` +
+`voicemail` is the strongest possible miss claim (their emergency line
+specifically went to voicemail), `true` + `extended_hold` means the emergency
+option was followed into unresolved hold, and `false` + `voicemail` is a
+weaker, more generic miss (their general line, not specifically tested for
+emergency coverage).
 
 ---
 

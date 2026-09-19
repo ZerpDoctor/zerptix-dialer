@@ -52,6 +52,13 @@ HEADER = [
     # block above: "yes" on alt_miss rows means the transcript needs a custom
     # AI-generated email line, not a fixed template sentence -- see decide_alt_contact.
     "needs_ai_copy",
+    # Appended at the END 2026-09-19, same no-shift reasoning as needs_ai_copy
+    # above. "true"/"false"/"not_applicable" -- combines with (never replaces)
+    # outcome: true+voicemail is the strongest possible miss claim for outreach
+    # copy (we specifically tried their emergency line and got voicemail);
+    # not_applicable means no IVR menu was involved at all (plain pickup or a
+    # voicemail with no menu). See ivr.Decision.is_emergency_route.
+    "routed_to_emergency_line",
 ]
 
 

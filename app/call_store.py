@@ -42,6 +42,10 @@ class CallRecord:
     gatekeeping_reasoning: str = ""
     alt_contact_detected: bool = False
     alt_contact_reasoning: str = ""
+    emergency_route: bool = False  # True if ANY digit pressed in the whole
+    # navigation path (across multi-level menus) was specifically the
+    # emergency/after-hours option -- sticky once set, never cleared by a
+    # later non-emergency press.
 
 
 class CallStore:
@@ -109,7 +113,7 @@ class CallStore:
             return rec
 
     def record_digit(self, call_sid: str, digit: str, classifier: str,
-                     flagged: bool, reasoning: str) -> CallRecord:
+                     flagged: bool, reasoning: str, is_emergency_route: bool = False) -> CallRecord:
         with self._lock:
             rec = self._by_sid[call_sid]
             rec.digits_sent.append(digit)
@@ -119,6 +123,7 @@ class CallStore:
             rec.ivr_fallback_flagged = rec.ivr_fallback_flagged or flagged
             rec.ivr_reasoning = reasoning
             rec.transcript_at_last_digit = len(rec.transcript_accum)
+            rec.emergency_route = rec.emergency_route or is_emergency_route
             return rec
 
     def mark_menu_no_digit(self, call_sid: str, classifier: str, reasoning: str) -> CallRecord:

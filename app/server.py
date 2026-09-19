@@ -263,6 +263,11 @@ def _build_row(rec, outcome: str, note: str) -> dict:
         "ivr_transcript": rec.transcript_accum[:5000],
         "from_number": rec.from_number or request.form.get("From", ""),
         "needs_ai_copy": "yes" if outcome == "alt_miss" else "no",
+        "routed_to_emergency_line": (
+            "true" if rec.emergency_route
+            else "false" if rec.ivr_detected
+            else "not_applicable"
+        ),
     }
 
 
@@ -520,7 +525,8 @@ def ivr_turn(stage: str, level: int) -> Response:
                 return _twiml("<Hangup/>")
 
             STORE.record_digit(call_sid, decision.digit, decision.classifier,
-                               decision.flagged, decision.reasoning)
+                               decision.flagged, decision.reasoning,
+                               is_emergency_route=decision.is_emergency_route)
             STORE.update(call_sid, phase="navigating")
             log.info(
                 "IVR press call_sid=%s digit=%s classifier=%s flagged=%s (%s)",

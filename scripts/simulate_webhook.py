@@ -132,6 +132,28 @@ CALL_SCENARIOS: dict[str, dict] = {
         "expect_digits": ["1"],
         "expect_outcome": "answered",
     },
+    # --- routed_to_emergency_line (2026-09-19): a new field tracking whether
+    # the IVR digit chosen was specifically the emergency/after-hours option,
+    # combined with (not replacing) outcome -- true+voicemail is the
+    # strongest possible miss claim for outreach copy.
+    "emergency_route_then_voicemail": {
+        "speech": [
+            "thank you for calling. press 1 for emergency water damage service, press 2 for billing",
+            "you have reached the voicemail of our emergency dispatch please leave a message after the tone",
+            "",
+        ],
+        "expect_digits": ["1"],
+        "expect_outcome": "voicemail",
+    },
+    "non_emergency_route_then_voicemail": {
+        "speech": [
+            "thank you for calling. press 1 for sales, press 2 for billing",
+            "you have reached the voicemail of our billing department please leave a message after the tone",
+            "",
+        ],
+        "expect_digits": ["2"],
+        "expect_outcome": "voicemail",
+    },
     # Menu navigated but the party we reach can't be auto-classified -> flagged
     # for manual recording review (spec section 4 anti-corruption intent).
     "ivr_unresolved_tail": {
