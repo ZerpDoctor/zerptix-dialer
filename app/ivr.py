@@ -130,10 +130,13 @@ _GATEKEEPING_PHRASES = [
 # Also covers two confirmed real dead-end patterns that don't fit the
 # text/email/website mold but are the same underlying problem -- this call
 # will not connect the caller to anyone, regardless of what they do next:
-# (a) Google Voice / personal call-screening ("state your name, ... will try
-# to connect you") -- a SEPARATE screening step decides whether to connect
-# later, not this call; (b) a company directory that dead-ends on requiring
-# an extension the caller has no way of knowing, with no fallback option.
+# (a) automated call-screening (Google Voice or similar) -- "state your
+# name, ... will try to connect you" / "I'll see if this person is
+# available" -- confirmed 2026-09-18 there is no live screener on these
+# calls, it is always a scripted system despite sounding conversational; a
+# SEPARATE screening step decides whether to connect later, not this call;
+# (b) a company directory that dead-ends on requiring an extension the
+# caller has no way of knowing, with no fallback option.
 _ALT_CONTACT_PHRASES = [
     "please text", "text this number", "text us at", "text the word",
     "send us a text", "you can text", "reach us by text",
@@ -145,6 +148,7 @@ _ALT_CONTACT_PHRASES = [
     "for immediate assistance please email",
     "will try to connect you", "try to connect you", "trying to connect you",
     "know your party's extension", "know the extension", "your party's extension",
+    "i'll see if", "let me check if", "i will see if",
 ]
 
 _TAIL_HOLD = [

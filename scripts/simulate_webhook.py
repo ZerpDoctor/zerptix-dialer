@@ -214,18 +214,19 @@ CALL_SCENARIOS: dict[str, dict] = {
         "expect_flagged": False,
         "expect_outcome": "answered",
     },
-    # --- live-human-screening misclassified as voicemail (2026-09-18
-    # Biorestoration incident): present-tense "I'll see if..." is an active
-    # person physically present, not a scripted recording, even combined
-    # with a state-your-name instruction that alone could sound automated.
-    "live_human_screening_not_voicemail": {
+    # --- automated call-screening misclassified as answered (2026-09-18
+    # Biorestoration incident, corrected same night): "I'll see if this
+    # person is available" SOUNDS like a live person physically present,
+    # but confirmed there is no live screener on these calls -- it is
+    # always a scripted, fully-automated system (Google Voice or similar),
+    # structurally the same alt_miss dead-end as "will try to connect you".
+    "automated_screening_is_alt_miss": {
         "speech": [
             "record your name and reason for calling I'll see if this person is available",
-            "",
         ],
         "amd": "machine_start",
         "expect_digits": [],
-        "expect_outcome": "answered",
+        "expect_outcome": "alt_miss",
     },
     # --- voicemail-controls-not-a-menu, third confirmed instance (2026-09-17
     # Blumer Restoration incident: pressed digit "1" into "to disconnect
