@@ -123,13 +123,14 @@ _GATEKEEPING_PHRASES = [
 ]
 
 # An automated message redirecting the caller to a DIFFERENT contact channel
-# entirely (text, email, website) instead of connecting them on this call --
-# distinct from gatekeeping (which demands the caller's own info) and from a
-# normal menu (which offers a digit to press within this same call). Same
-# "single hit is enough to warrant Haiku confirmation" reasoning as gatekeeping.
+# entirely (text, email, website, ANOTHER PHONE NUMBER) instead of connecting
+# them on this call -- distinct from gatekeeping (which demands the caller's
+# own info) and from a normal menu (which offers a digit to press within this
+# same call). Same "single hit is enough to warrant Haiku confirmation"
+# reasoning as gatekeeping.
 # Also covers two confirmed real dead-end patterns that don't fit the
-# text/email/website mold but are the same underlying problem -- this call
-# will not connect the caller to anyone, regardless of what they do next:
+# text/email/website/phone mold but are the same underlying problem -- this
+# call will not connect the caller to anyone, regardless of what they do next:
 # (a) automated call-screening (Google Voice or similar) -- "state your
 # name, ... will try to connect you" / "I'll see if this person is
 # available" -- confirmed 2026-09-18 there is no live screener on these
@@ -137,6 +138,13 @@ _GATEKEEPING_PHRASES = [
 # SEPARATE screening step decides whether to connect later, not this call;
 # (b) a company directory that dead-ends on requiring an extension the
 # caller has no way of knowing, with no fallback option.
+# Phone-redirect phrases added 2026-09-21: missed entirely until a real audit
+# caught Ashley's Restoration's voicemail ("if you have an emergency please
+# call my cell at ...") logging as plain voicemail -- the pre-filter below
+# gated Haiku out before it ever got a chance to judge it, same failure shape
+# as a keyword blocklist that doesn't generalize. A call-my-cell redirect is
+# structurally identical to a text/email redirect: the caller will not reach
+# anyone on THIS call regardless of what they do next.
 _ALT_CONTACT_PHRASES = [
     "please text", "text this number", "text us at", "text the word",
     "send us a text", "you can text", "reach us by text",
@@ -149,6 +157,9 @@ _ALT_CONTACT_PHRASES = [
     "will try to connect you", "try to connect you", "trying to connect you",
     "know your party's extension", "know the extension", "your party's extension",
     "i'll see if", "let me check if", "i will see if",
+    "call my cell", "call my mobile", "call my personal", "call my direct",
+    "call me at", "please call me", "reach me at", "reach me directly",
+    "you can call me", "you can reach me", "call or text me at",
 ]
 
 _TAIL_HOLD = [
