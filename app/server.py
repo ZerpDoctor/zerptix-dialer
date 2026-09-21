@@ -875,7 +875,17 @@ def test_ivr_menu_choice() -> Response:
         return Response("invalid signature", status=403)
     digits = request.form.get("Digits", "")
     log.info("test_ivr menu_choice digits=%s call_sid=%s", digits, request.form.get("CallSid"))
-    return _twiml(f"<Say>You entered {' '.join(digits)}. Thank you, goodbye.</Say>")
+    # A bare "you entered X, goodbye" with nothing after it hangs up too fast
+    # for the dialer's own post-digit tail-listening Gather to catch anything
+    # -- confirmed live 2026-09-21 (menu scenario correctly pressed 3 and
+    # flagged routed_to_emergency_line, but the run ended extended_hold
+    # instead of testing real tail content). This gives the tail path
+    # something real to classify, same as an actual transferred call would.
+    return _twiml(
+        f"<Say>You entered {' '.join(digits)}. Please hold while we connect "
+        "you to the next available representative.</Say>"
+        '<Pause length="20"/>'
+    )
 
 
 # --------------------------------------------------------------------------- #
