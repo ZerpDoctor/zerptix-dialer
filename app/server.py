@@ -80,9 +80,10 @@ def _verify(req) -> bool:
 
 
 def _lookup_queue_row(phone: str):
-    """Best-effort Queue-tab lookup by phone, shared by the display helpers
-    below so a single resolve only costs one extra Sheets read, not several.
-    Returns None on any failure -- never raises, this is display-only."""
+    """Best-effort Queue-tab lookup by phone -- fallback path for calls that
+    didn't come through the scheduler (e.g. inbound), which don't already have
+    company identity attached to their CallRecord. Returns None on any
+    failure -- never raises, this is display-only."""
     try:
         from .queue_backend import SheetQueue
 
@@ -92,18 +93,17 @@ def _lookup_queue_row(phone: str):
         return None
 
 
-def _format_local(now_utc: datetime, queue_row) -> tuple[str, str]:
+def _format_local(now_utc: datetime, tz_name: str) -> tuple[str, str]:
     """(date, time) in the called company's own local timezone, falling back
-    to UTC if the company isn't in the Queue or has no valid timezone. Split
-    into separate cells so email mail-merge can reference just the time
-    without the date. Time is bare (no tz abbreviation) since it's already in
-    the recipient's own local time -- adding e.g. "EDT" would be redundant
-    for them. Never raises -- this is a display convenience, not something
-    call resolution depends on."""
+    to UTC if there's no valid timezone. Split into separate cells so email
+    mail-merge can reference just the time without the date. Time is bare (no
+    tz abbreviation) since it's already in the recipient's own local time --
+    adding e.g. "EDT" would be redundant for them. Never raises -- this is a
+    display convenience, not something call resolution depends on."""
     try:
         from .timezones import parse_tz
 
-        tz = parse_tz(queue_row.timezone) if queue_row is not None else None
+        tz = parse_tz(tz_name) if tz_name else None
         if tz is not None:
             local = now_utc.astimezone(tz)
             return local.strftime("%b %d, %Y"), local.strftime("%I:%M %p")
@@ -240,10 +240,19 @@ def _build_row(rec, outcome: str, note: str) -> dict:
         notes.append("TEST_MODE")
     now_utc = datetime.now(timezone.utc)
     phone = rec.to_number or request.form.get("To", "")
-    queue_row = _lookup_queue_row(phone)
-    logged_at_date, logged_at_time = _format_local(now_utc, queue_row)
+    # Prefer identity captured at dial time (scheduler calls already know this
+    # from the Queue row they just read to decide to dial) over a fresh Sheets
+    # lookup by phone -- avoids a redundant read per call during a batch, which
+    # was blowing the Sheets API read quota under burst load (2026-09-20).
+    if rec.company_name:
+        company_name, tz_name = rec.company_name, rec.company_timezone
+    else:
+        queue_row = _lookup_queue_row(phone)
+        company_name = queue_row.company_name if queue_row is not None else ""
+        tz_name = queue_row.timezone if queue_row is not None else ""
+    logged_at_date, logged_at_time = _format_local(now_utc, tz_name)
     return {
-        "company_name": queue_row.company_name if queue_row is not None else "",
+        "company_name": company_name,
         "logged_at_iso": now_utc.isoformat(),
         "logged_at_date": logged_at_date,
         "logged_at_time": logged_at_time,
@@ -403,7 +412,9 @@ def place_call_endpoint():
             log.error("Call placement failed for %s: %s", to_number, e)
             return {"error": str(e)}, 502
         used_from = from_number or CFG.signalwire_from_number
-        STORE.register(call_sid, to_number, from_number=used_from)
+        STORE.register(call_sid, to_number, from_number=used_from,
+                        company_name=row.company_name if row is not None else "",
+                        company_timezone=row.timezone if row is not None else "")
 
         fields = None
         if row is not None:

@@ -267,7 +267,15 @@ def http_dialer(phone: str, *, window: str, local_date_iso: str, from_number: st
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read())["call_sid"]
+            call_sid = json.loads(r.read())["call_sid"]
+        # Space real dials out so a batch doesn't all go live within the same
+        # few seconds -- that burst was overwhelming downstream capacity and
+        # the Sheets read quota (incident 2026-09-20). Lives here, not in
+        # tick()'s loop, so the simulation (which injects its own dialer,
+        # never http_dialer) stays instant.
+        if CFG.sched_dial_pacing_seconds > 0:
+            _time.sleep(CFG.sched_dial_pacing_seconds)
+        return call_sid
     except urllib.error.HTTPError as e:
         body = e.read().decode()
         try:

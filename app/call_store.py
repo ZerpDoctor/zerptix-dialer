@@ -17,6 +17,10 @@ class CallRecord:
     call_sid: str
     to_number: str
     from_number: str = ""
+    company_name: str = ""              # from the Queue row at dial time, if this
+    company_timezone: str = ""          # was a scheduler-placed call -- avoids a
+    # second, redundant Sheets read at resolution time just to look these up
+    # again by phone number (see google_sheets read-quota incident 2026-09-20).
     placed_at: float = field(default_factory=time.time)
     answered_by: str | None = None      # buffered AMD AnsweredBy
     call_status: str | None = None
@@ -53,9 +57,11 @@ class CallStore:
         self._lock = threading.Lock()
         self._by_sid: dict[str, CallRecord] = {}
 
-    def register(self, call_sid: str, to_number: str, from_number: str = "") -> CallRecord:
+    def register(self, call_sid: str, to_number: str, from_number: str = "",
+                 company_name: str = "", company_timezone: str = "") -> CallRecord:
         with self._lock:
-            rec = CallRecord(call_sid=call_sid, to_number=to_number, from_number=from_number)
+            rec = CallRecord(call_sid=call_sid, to_number=to_number, from_number=from_number,
+                              company_name=company_name, company_timezone=company_timezone)
             self._by_sid[call_sid] = rec
             return rec
 
