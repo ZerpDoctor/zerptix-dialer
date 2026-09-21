@@ -91,6 +91,11 @@ class Config:
     machine_detection: str = "Enable"
     amd_wait_seconds: int = 6
     record_calls: bool = False
+    transcribe_calls: bool = False  # SignalWire Transcribe/TranscribeCallback on the
+    # whole-call REST recording -- undocumented whether this combination works
+    # (SignalWire only documents transcribe on the <Record> verb, not the Calls
+    # resource's Record=true); being tested live 2026-09-20/21. No effect unless
+    # record_calls is also true.
     port: int = 8080
 
     # IVR navigation
@@ -203,6 +208,7 @@ def load() -> Config:
         machine_detection=_get("MACHINE_DETECTION", "Enable"),
         amd_wait_seconds=int(_get("AMD_WAIT_SECONDS", "6") or "6"),
         record_calls=_bool("RECORD_CALLS", False),
+        transcribe_calls=_bool("TRANSCRIBE_CALLS", False),
         port=int(_get("PORT", "8080") or "8080"),
         ivr_enabled=_bool("IVR_ENABLED", True),
         ivr_master_timeout_seconds=int(_get("IVR_MASTER_TIMEOUT_SECONDS", "60") or "60"),

@@ -124,6 +124,12 @@ def place_call(to_number: str, *, from_number: str | None = None) -> str:
     if CFG.record_calls:
         params.append(("RecordingStatusCallback", CFG.callback_url("webhooks/recording")))
         params.append(("RecordingStatusCallbackMethod", "POST"))
+        if CFG.transcribe_calls:
+            # SignalWire only documents Transcribe/TranscribeCallback on the
+            # <Record> verb, not this REST Calls resource -- being tested live
+            # whether it also applies to whole-call recording (2026-09-20/21).
+            params.append(("Transcribe", "true"))
+            params.append(("TranscribeCallback", CFG.callback_url("webhooks/transcription")))
 
     data = _post("Calls.json", params)
     sid = data.get("sid")

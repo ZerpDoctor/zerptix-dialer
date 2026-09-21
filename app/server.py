@@ -768,6 +768,33 @@ def webhook_recording() -> Response:
     return Response("", status=204)
 
 
+@app.post("/webhooks/transcription")
+def webhook_transcription() -> Response:
+    """TEMPORARY feasibility probe (2026-09-20/21): SignalWire only documents
+    Transcribe/TranscribeCallback on the <Record> verb, not whole-call REST
+    recording -- this logs the raw callback as its own Sheet row (rather than
+    trying to backfill the real call row) so it can be inspected directly to
+    confirm whether the combination works at all, and what fields it sends,
+    before building the real reconciliation pass on top of it."""
+    if not _verify(request):
+        return Response("invalid signature", status=403)
+    fields = request.form.to_dict()
+    log.info("Transcription callback: %s", fields)
+    now_utc = datetime.now(timezone.utc)
+    google_sheets.append_result({
+        "company_name": "TEST_TRANSCRIPTION_WEBHOOK_PROBE",
+        "outcome": fields.get("TranscriptionStatus", ""),
+        "logged_at_date": now_utc.strftime("%b %d, %Y"),
+        "logged_at_time": now_utc.strftime("%I:%M %p UTC"),
+        "notes": repr(fields),
+        "ivr_transcript": fields.get("TranscriptionText", ""),
+        "logged_at_iso": now_utc.isoformat(),
+        "call_sid": fields.get("CallSid", ""),
+        "recording_url": fields.get("RecordingUrl", ""),
+    })
+    return Response("", status=204)
+
+
 # --------------------------------------------------------------------------- #
 # inbound / callback pool (spec sections 9-10)
 # --------------------------------------------------------------------------- #
