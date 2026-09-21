@@ -814,6 +814,22 @@ def webhook_transcription() -> Response:
 # not exposed as a query param on this same request because inbound Voice
 # webhook requests don't carry any outbound-call context to key off of.
 _TEST_IVR_SCENARIOS = {
+    # Regression fixture for the personal-cell-voicemail incident
+    # (2026-09-21): a real carrier voicemail's OWN message-control menu,
+    # reproducing its exact structure (voicemail language, THEN a numbered
+    # menu) so the looks_like_menu() fix can be validated live against
+    # something that actually exercises it -- neither "voicemail" (no menu
+    # at all) nor "menu" (no voicemail language) below does that.
+    "voicemail_control_menu": (
+        "<Say>Please leave a message after the tone. At the tone, please "
+        "record your message. When you have finished recording, press "
+        "pound for further options.</Say>"
+        '<Pause length="8"/>'
+        "<Say>To review, re-record, or add to your message, press pound. "
+        "Press 1 to mark your message urgent. Press 2 to mark your message "
+        "private. Press 3 to send your message as is.</Say>"
+        '<Pause length="20"/>'
+    ),
     "voicemail": (
         "<Say>Thank you for calling Test Fake Business. We are unable to "
         "take your call right now. Please leave your name and number after "
