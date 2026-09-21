@@ -105,6 +105,11 @@ class Config:
     ivr_speech_model: str = "phone_call"
     ivr_initial_timeout_seconds: int = 5
     ivr_tail_gather_seconds: int = 5
+    ivr_confirm_gather_seconds: int = 7  # short window used only when turn 1
+    # already sounds like a confident live pickup, waiting on turn 2 to
+    # confirm -- deliberately much shorter than ivr_tail_gather_seconds so a
+    # real person isn't left in dead air for that long (see ivr_turn's
+    # gather_count==1 fast-confirm branch in server.py).
     gatekeeping_detection_enabled: bool = True  # kill switch, independent of IVR_ENABLED
 
     # Scheduler / Sheet-as-queue (spec section 7)
@@ -221,6 +226,7 @@ def load() -> Config:
         ivr_speech_model=_get("IVR_SPEECH_MODEL", "phone_call"),
         ivr_initial_timeout_seconds=int(_get("IVR_INITIAL_TIMEOUT_SECONDS", "5") or "5"),
         ivr_tail_gather_seconds=int(_get("IVR_TAIL_GATHER_SECONDS", "5") or "5"),
+        ivr_confirm_gather_seconds=int(_get("IVR_CONFIRM_GATHER_SECONDS", "7") or "7"),
         gatekeeping_detection_enabled=_bool("GATEKEEPING_DETECTION_ENABLED", True),
         sched_queue_tab=_get("SCHED_QUEUE_TAB", "Queue"),
         sched_sim_queue_tab=_get("SCHED_SIM_QUEUE_TAB", "Queue_SIM"),

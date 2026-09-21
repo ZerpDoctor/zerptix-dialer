@@ -606,6 +606,20 @@ def ivr_turn(stage: str, level: int) -> Response:
             _resolve(call_sid)
             return _twiml("<Hangup/>")
 
+    # Turn 1 alone already sounds like a confident live pickup (same read as
+    # above) but isn't trusted yet -- real incident 2026-09-21: real people
+    # picking up were left in dead air for up to the full tail-gather window
+    # (20s) waiting on a second turn we won't act on unless it also sounds
+    # human, saying "hello... hello" into silence because this dialer never
+    # speaks. Listening again is still required (still won't trust turn 1
+    # alone -- a voicemail opening can read identically human), but there's
+    # no reason to make a live person wait the same window used elsewhere to
+    # avoid truncating a long disclosure -- confirm/deny much sooner instead.
+    if rec.gather_count == 1:
+        early = ivr.decide_tail(segment, rec.answered_by)
+        if early.outcome == "answered":
+            return _twiml(_gather("menu", level, CFG.ivr_confirm_gather_seconds))
+
     # Keep listening through non-actionable speech (the menu instruction may be
     # at the tail end of a longer disclosure).
     return _twiml(_gather("menu", level, CFG.ivr_tail_gather_seconds))
