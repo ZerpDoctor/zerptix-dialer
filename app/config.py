@@ -118,9 +118,14 @@ class Config:
     sched_first_window: str = "evening"
     sched_tick_seconds: int = 60
     sched_nightly_cap: int = 0  # 0 = unlimited. Process-lifetime count, resets daily (UTC).
-    sched_dial_pacing_seconds: float = 2.0  # delay between dials within one tick, so a
+    sched_dial_pacing_seconds: float = 6.0  # delay between dials within one tick, so a
     # full batch doesn't all go live within the same few seconds (was overwhelming
     # downstream capacity and the Sheets read quota -- see incident 2026-09-20).
+    # Raised 2s->6s same night: 2s cut the unknown-outcome rate roughly in half
+    # (47%->25-33%) but didn't close it, and raising OUR gunicorn threads had
+    # NOT helped at all -- pointing at a concurrent-call constraint on
+    # SignalWire's side, not ours, so pushing pacing further is the next cheap
+    # (free) lever to pull before building anything new.
 
     # Inbound / callback number pool (spec sections 9-10)
     inbound_pool_numbers: list[str] = field(default_factory=list)
@@ -227,7 +232,7 @@ def load() -> Config:
         sched_first_window=_get("SCHED_FIRST_WINDOW", "evening"),
         sched_tick_seconds=int(_get("SCHED_TICK_SECONDS", "60") or "60"),
         sched_nightly_cap=int(_get("SCHED_NIGHTLY_CAP", "0") or "0"),
-        sched_dial_pacing_seconds=float(_get("SCHED_DIAL_PACING_SECONDS", "2.0") or "2.0"),
+        sched_dial_pacing_seconds=float(_get("SCHED_DIAL_PACING_SECONDS", "6.0") or "6.0"),
         inbound_pool_numbers=_e164_list(_get("INBOUND_POOL_NUMBERS", "")),
         inbound_log_tab=_get("INBOUND_LOG_TAB", "Inbound"),
         inbound_reject_reason=_get("INBOUND_REJECT_REASON", "rejected"),
