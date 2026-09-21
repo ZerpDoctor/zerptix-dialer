@@ -824,12 +824,26 @@ _TEST_IVR_SCENARIOS = {
         '<Pause length="45"/>'
     ),
     "menu": (
+        # No <Gather> on this (callee) side -- confirmed live 2026-09-21 that
+        # an active Gather on BOTH legs of a call that lives entirely on our
+        # own SignalWire account (this number + our own dialer's own Gather)
+        # reproducibly causes total transcript blackout (2/2 failures),
+        # while the same setup with no competing Gather succeeded cleanly
+        # (2/2). Real businesses run their own phone system's DTMF
+        # detection, not SignalWire's Gather, so that contention doesn't
+        # exist in production -- but it's not needed here either: our own
+        # dialer decides which digit to press and logs it (digits_sent)
+        # independent of whether this side "hears" it via its own Gather.
+        # The pause gives our dialer time to send the digit; the follow-up
+        # Say+Pause gives its post-digit tail-listening Gather real content
+        # to classify, regardless of which digit came in.
         "<Say>Thank you for calling Test Fake Business. Press 1 for sales. "
         "Press 2 for support. Press 3 for our emergency line. Press 0 for "
         "the operator.</Say>"
-        '<Gather numDigits="1" timeout="10" action="/test_ivr/menu_choice" '
-        'method="POST"><Say>Please make a selection now.</Say></Gather>'
-        "<Say>We did not receive your selection. Goodbye.</Say>"
+        '<Pause length="8"/>'
+        "<Say>Please hold while we connect you to the next available "
+        "representative.</Say>"
+        '<Pause length="20"/>'
     ),
     "alt_contact": (
         "<Say>Thank you for calling Test Fake Business. If you have an "
@@ -838,12 +852,14 @@ _TEST_IVR_SCENARIOS = {
         '<Pause length="45"/>'
     ),
     "gatekeeping": (
+        # No <Gather> here either, same competing-Gather reasoning as menu
+        # above -- and unneeded regardless, since the correct dialer
+        # behavior being tested is recognizing there's no way forward and
+        # hanging up (gatekeeping_miss), not sending anything back.
         "<Say>Thank you for calling Test Fake Business automated account "
         "system. Please enter your ten digit account number followed by "
         "the pound sign.</Say>"
-        '<Gather timeout="10" action="/test_ivr/menu_choice" method="POST" '
-        'finishOnKey="#"></Gather>'
-        "<Say>We did not receive your account number. Goodbye.</Say>"
+        '<Pause length="30"/>'
     ),
     "hold": (
         "<Say>Thank you for calling Test Fake Business. Please hold while "
@@ -867,25 +883,6 @@ def test_ivr_start() -> Response:
     scenario = request.values.get("scenario", "voicemail")
     body = _TEST_IVR_SCENARIOS.get(scenario, _TEST_IVR_SCENARIOS["voicemail"])
     return _twiml(body)
-
-
-@app.post("/test_ivr/menu_choice")
-def test_ivr_menu_choice() -> Response:
-    if not _verify(request):
-        return Response("invalid signature", status=403)
-    digits = request.form.get("Digits", "")
-    log.info("test_ivr menu_choice digits=%s call_sid=%s", digits, request.form.get("CallSid"))
-    # A bare "you entered X, goodbye" with nothing after it hangs up too fast
-    # for the dialer's own post-digit tail-listening Gather to catch anything
-    # -- confirmed live 2026-09-21 (menu scenario correctly pressed 3 and
-    # flagged routed_to_emergency_line, but the run ended extended_hold
-    # instead of testing real tail content). This gives the tail path
-    # something real to classify, same as an actual transferred call would.
-    return _twiml(
-        f"<Say>You entered {' '.join(digits)}. Please hold while we connect "
-        "you to the next available representative.</Say>"
-        '<Pause length="20"/>'
-    )
 
 
 # --------------------------------------------------------------------------- #
