@@ -342,7 +342,12 @@ def _resolve(call_sid: str, hangup: bool = True, recovered: bool = False) -> Non
             return
     if hangup:
         hang_up(call_sid)
-    rec = STORE.get(call_sid)
+    # snapshot, not get(): _compute_outcome() and _build_row() both read rec's
+    # fields, and a concurrent webhook thread mutating the live record in
+    # between the two would decide the outcome from one instant and build the
+    # notes from another -- see CallStore.snapshot's docstring for the real
+    # incident this fixes.
+    rec = STORE.snapshot(call_sid)
     outcome, note = _compute_outcome(rec)
     _write_sheet_with_retry(_build_row(rec, outcome, note))
     STORE.update(call_sid, phase="resolved")

@@ -168,6 +168,21 @@ _TAIL_HOLD = [
     "all our agents", "currently assisting other", "your call is important",
     "estimated wait", "next available", "remain on the line", "thank you for holding",
     "your call will be answered", "please stay on the line",
+    # Added 2026-09-21, found via a full-history classification sweep: AAA
+    # Disaster Recovery's "this is triple a disaster recovery ... connecting
+    # you now" is a scripted automated-routing announcement -- Haiku's own
+    # primary read correctly said so ("not a human greeting"), but that
+    # reasoning gets discarded once its structured verdict lands on
+    # "unknown", and classify_tail()'s fallback then matched the generic
+    # "this is" phrase in _TAIL_ANSWERED (checked below _TAIL_HOLD) plus a
+    # <=12-word guard that this exact transcript happened to satisfy,
+    # overriding Haiku's correct read with the wrong one. These phrases are
+    # checked first, same as the rest of this list, so a real live "connecting
+    # you now, how can I help" still resolves correctly once genuine
+    # conversational content follows (that case already goes through Haiku's
+    # confident primary path, never reaches this fallback at all).
+    "connecting you now", "connecting you", "transferring your call",
+    "please hold while we connect", "one moment while we connect",
 ]
 
 

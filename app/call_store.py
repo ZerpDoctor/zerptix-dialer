@@ -7,6 +7,7 @@ restart and work across processes.
 """
 from __future__ import annotations
 
+import copy
 import threading
 import time
 from dataclasses import dataclass, field
@@ -68,6 +69,30 @@ class CallStore:
     def get(self, call_sid: str) -> CallRecord | None:
         with self._lock:
             return self._by_sid.get(call_sid)
+
+    def snapshot(self, call_sid: str) -> CallRecord | None:
+        """Atomic point-in-time copy, for resolution specifically.
+
+        `get()` returns a reference to the SAME mutable record -- fine for
+        code that reads one field, wrong for `_resolve()`, which reads
+        several fields (across `_compute_outcome` then `_build_row`) that
+        must all reflect the same instant. A real incident found via a
+        full-history classification sweep 2026-09-21: a late-arriving
+        `/ivr/turn` webhook for the same call landed on another thread in the
+        gap between those two calls and ran `mark_alt_contact()`, so the
+        outcome was decided from the pre-mutation state while the logged
+        notes were built from the post-mutation state -- outcome='voicemail'
+        with an 'alt_contact: ...' note contradicting it. Raising gunicorn
+        threads earlier the same night made this race window get hit more
+        often, not less. `digits_sent` is copied explicitly since a shallow
+        copy would otherwise still share the same mutable list."""
+        with self._lock:
+            rec = self._by_sid.get(call_sid)
+            if rec is None:
+                return None
+            snap = copy.copy(rec)
+            snap.digits_sent = list(rec.digits_sent)
+            return snap
 
     def has_inflight_to(self, to_number: str) -> bool:
         """True if a call to this number was placed and not yet logged."""
