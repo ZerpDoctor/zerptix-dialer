@@ -368,6 +368,23 @@ def healthz() -> Response:
     return Response("ok", mimetype="text/plain")
 
 
+@app.get("/calls/<call_sid>/status")
+def call_status(call_sid: str):
+    """Cheap in-memory status check, for the scheduler's bounded-concurrency
+    dial pool (2026-09-21) -- lets the worker process (a separate container
+    from this one on Railway) know when a call it placed has resolved,
+    without polling the Sheet (already hit its read-quota limit more than
+    once tonight) and without waiting on a fixed guessed delay. A call_sid
+    this process has no record of (STORE.get returns None) is reported
+    resolved=True -- happens after a restart, or once enough time has passed
+    that it's not worth this process's memory; either way the pool shouldn't
+    treat an unknown call_sid as a stuck slot forever."""
+    rec = STORE.get(call_sid)
+    if rec is None:
+        return {"resolved": True, "known": False}, 200
+    return {"resolved": rec.logged, "known": True}, 200
+
+
 @app.post("/calls")
 def place_call_endpoint():
     data = request.get_json(silent=True) or request.form
