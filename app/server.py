@@ -801,6 +801,84 @@ def webhook_transcription() -> Response:
 
 
 # --------------------------------------------------------------------------- #
+# test-IVR fixture (2026-09-21): a fake "business" we own and fully control,
+# for exercising the real live call pipeline (AMD, Gather, IVR navigation,
+# alt_contact/gatekeeping detection, the resolution race-condition fix) any
+# time of day without waiting for a real nightly batch or spending a real
+# company. Dial the number this is configured on via `python -m app.dial`
+# exactly like a real outbound call -- it goes through the same /calls ->
+# place_call -> AMD/Gather/_resolve pipeline as any real company, it's just
+# the audio on the other end that's ours. To switch which scenario the
+# number plays, update its VoiceUrl via the SignalWire REST API
+# (IncomingPhoneNumbers/{sid}.json, VoiceUrl=.../test_ivr/start?scenario=X);
+# not exposed as a query param on this same request because inbound Voice
+# webhook requests don't carry any outbound-call context to key off of.
+_TEST_IVR_SCENARIOS = {
+    "voicemail": (
+        "<Say>Thank you for calling Test Fake Business. We are unable to "
+        "take your call right now. Please leave your name and number after "
+        "the tone and we will call you back.</Say>"
+        '<Pause length="1"/>'
+        "<Say>At the tone, please record your message. When you have "
+        "finished recording, you may hang up.</Say>"
+        '<Pause length="45"/>'
+    ),
+    "menu": (
+        "<Say>Thank you for calling Test Fake Business. Press 1 for sales. "
+        "Press 2 for support. Press 3 for our emergency line. Press 0 for "
+        "the operator.</Say>"
+        '<Gather numDigits="1" timeout="10" action="/test_ivr/menu_choice" '
+        'method="POST"><Say>Please make a selection now.</Say></Gather>'
+        "<Say>We did not receive your selection. Goodbye.</Say>"
+    ),
+    "alt_contact": (
+        "<Say>Thank you for calling Test Fake Business. If you have an "
+        "emergency, please text us at 5 5 5 0 1 2 3 4 5 6. Otherwise, "
+        "please leave a message after the tone.</Say>"
+        '<Pause length="45"/>'
+    ),
+    "gatekeeping": (
+        "<Say>Thank you for calling Test Fake Business automated account "
+        "system. Please enter your ten digit account number followed by "
+        "the pound sign.</Say>"
+        '<Gather timeout="10" action="/test_ivr/menu_choice" method="POST" '
+        'finishOnKey="#"></Gather>'
+        "<Say>We did not receive your account number. Goodbye.</Say>"
+    ),
+    "hold": (
+        "<Say>Thank you for calling Test Fake Business. Please hold while "
+        "we connect you to the next available representative.</Say>"
+        '<Pause length="45"/>'
+    ),
+    "human": (
+        "<Say>Hello, this is Jane, how can I help you today?</Say>"
+        '<Pause length="5"/>'
+        "<Say>Hello? Are you still there?</Say>"
+        '<Pause length="20"/>'
+    ),
+}
+
+
+@app.post("/test_ivr/start")
+@app.get("/test_ivr/start")
+def test_ivr_start() -> Response:
+    if not _verify(request):
+        return Response("invalid signature", status=403)
+    scenario = request.values.get("scenario", "voicemail")
+    body = _TEST_IVR_SCENARIOS.get(scenario, _TEST_IVR_SCENARIOS["voicemail"])
+    return _twiml(body)
+
+
+@app.post("/test_ivr/menu_choice")
+def test_ivr_menu_choice() -> Response:
+    if not _verify(request):
+        return Response("invalid signature", status=403)
+    digits = request.form.get("Digits", "")
+    log.info("test_ivr menu_choice digits=%s call_sid=%s", digits, request.form.get("CallSid"))
+    return _twiml(f"<Say>You entered {' '.join(digits)}. Thank you, goodbye.</Say>")
+
+
+# --------------------------------------------------------------------------- #
 # inbound / callback pool (spec sections 9-10)
 # --------------------------------------------------------------------------- #
 
