@@ -216,6 +216,26 @@ def looks_like_menu(transcript: str) -> MenuLook:
     if any(p in t for p in _VOICEMAIL_CONTROL_PHRASES):
         return MenuLook(False, 0, ["voicemail-control-menu-excluded"])
 
+    # _VOICEMAIL_CONTROL_PHRASES above is a narrow, specific-wording
+    # blocklist that has now missed 5 separate real incidents with 5
+    # different phrasings (most recently: a personal cell's own carrier
+    # voicemail -- "press 1 to mark your message urgent" -- got navigated
+    # as if it were a business menu, on a REAL PERSON'S PHONE, not a test
+    # line; confirmed 2026-09-21). Phrase-blocklisting a voicemail box's
+    # near-infinite specific control wordings doesn't generalize and never
+    # will. This is the structural fix: _TAIL_VOICEMAIL is the general,
+    # already-proven-reliable "this is a voicemail greeting" signal used
+    # elsewhere in this file for tail classification -- once ANY of those
+    # phrases has appeared anywhere in this call's transcript so far, we
+    # already know we're listening to a voicemail box, so ANY subsequent
+    # "press N" is almost certainly that box's own controls, regardless of
+    # its specific wording. Checked against the full transcript passed in
+    # (the caller passes the whole accumulated segment, not just the
+    # newest turn), so a control-menu phrase reached via an earlier digit
+    # press within the same voicemail flow is still caught.
+    if any(p in t for p in _TAIL_VOICEMAIL):
+        return MenuLook(False, 0, ["voicemail-greeting-already-established"])
+
     matched: list[str] = []
     score = 0
 
