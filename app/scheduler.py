@@ -21,6 +21,7 @@ import argparse
 import json
 import logging
 import sys
+import threading as _threading
 import time as _time
 import urllib.error
 import urllib.request
@@ -267,15 +268,7 @@ def http_dialer(phone: str, *, window: str, local_date_iso: str, from_number: st
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            call_sid = json.loads(r.read())["call_sid"]
-        # Space real dials out so a batch doesn't all go live within the same
-        # few seconds -- that burst was overwhelming downstream capacity and
-        # the Sheets read quota (incident 2026-09-20). Lives here, not in
-        # tick()'s loop, so the simulation (which injects its own dialer,
-        # never http_dialer) stays instant.
-        if CFG.sched_dial_pacing_seconds > 0:
-            _time.sleep(CFG.sched_dial_pacing_seconds)
-        return call_sid
+            return json.loads(r.read())["call_sid"]
     except urllib.error.HTTPError as e:
         body = e.read().decode()
         try:
@@ -288,6 +281,62 @@ def http_dialer(phone: str, *, window: str, local_date_iso: str, from_number: st
         raise DialError(f"HTTP {e.code}: {msg}") from e
     except urllib.error.URLError as e:
         raise DialError(f"cannot reach dialer server at {url}: {e}") from e
+
+
+# --------------------------------------------------------------------------- #
+# bounded-concurrency dial pool
+# --------------------------------------------------------------------------- #
+
+_POOL_POLL_SECONDS = 3
+_POOL_MAX_WAIT_SECONDS = 150  # backstop only; every real call already
+# resolves within ivr_master_timeout_seconds (~60s) + a little webhook
+# latency, so this should essentially never actually bind in practice.
+
+_pool_lock = _threading.Lock()
+_pool_inflight_sids: list[str] = []
+
+
+def _call_resolved(call_sid: str) -> bool:
+    """Cheap in-memory check against dialer-web's own CallStore (not the
+    Sheet -- already hit its read-quota limit more than once tonight).
+    Any failure (network hiccup, dialer-web mid-restart) is treated as
+    resolved rather than blocking a pool slot forever on something we can't
+    currently observe -- worst case that slot frees a little early, not a
+    stuck pool."""
+    url = CFG.callback_url(f"calls/{call_sid}/status")
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return bool(json.loads(r.read()).get("resolved", True))
+    except Exception as e:  # noqa: BLE001
+        log.warning("status check failed for call_sid=%s (%s); treating as resolved", call_sid, e)
+        return True
+
+
+def pooled_http_dialer(phone: str, *, window: str, local_date_iso: str, from_number: str | None = None) -> str:
+    """Bounded-concurrency wrapper around http_dialer (2026-09-21), used as
+    the real dialer for both CLI commands below -- waits for a free slot
+    (fewer than CFG.sched_max_concurrent_calls calls still in-flight)
+    before placing the next real call, instead of a blind fixed delay.
+    Calibrated live against real franchise numbers: N=3/5/8 concurrent all
+    resolved with zero 'unknown' outcomes; an unpaced 21-at-once burst
+    produced 81% unknown (blank AMD, zero transcript) -- confirming a real
+    capacity ceiling somewhere between 8 and 21 concurrent calls, not a
+    gradual slope. Deliberately NOT used by sim_quarter.py's injected
+    dialer, which stays instant."""
+    deadline = _time.time() + _POOL_MAX_WAIT_SECONDS
+    while _time.time() < deadline:
+        with _pool_lock:
+            _pool_inflight_sids[:] = [sid for sid in _pool_inflight_sids if not _call_resolved(sid)]
+            if len(_pool_inflight_sids) < CFG.sched_max_concurrent_calls:
+                break
+        _time.sleep(_POOL_POLL_SECONDS)
+    else:
+        log.warning("pooled dialer: no free slot after %ds, dialing anyway", _POOL_MAX_WAIT_SECONDS)
+
+    call_sid = http_dialer(phone, window=window, local_date_iso=local_date_iso, from_number=from_number)
+    with _pool_lock:
+        _pool_inflight_sids.append(call_sid)
+    return call_sid
 
 
 # --------------------------------------------------------------------------- #
@@ -435,13 +484,14 @@ def _cli() -> None:
                 print("--now needs a UTC offset (e.g. ...-04:00 or ...+00:00)")
                 sys.exit(2)
         q = SheetQueue(args.tab or CFG.sched_queue_tab)
-        _print(tick(now, queue=q, dry_run=args.dry_run))
+        _print(tick(now, queue=q, dialer=pooled_http_dialer, dry_run=args.dry_run))
     elif args.cmd == "run":
         q = SheetQueue(args.tab or CFG.sched_queue_tab)
-        log.info("scheduler loop: tick every %ds against tab %r", CFG.sched_tick_seconds, q.tab)
+        log.info("scheduler loop: tick every %ds against tab %r, max %d concurrent calls",
+                  CFG.sched_tick_seconds, q.tab, CFG.sched_max_concurrent_calls)
         while True:
             try:
-                _print(tick(queue=q))
+                _print(tick(queue=q, dialer=pooled_http_dialer))
             except Exception as e:  # noqa: BLE001
                 log.exception("tick failed: %s", e)
             _time.sleep(CFG.sched_tick_seconds)

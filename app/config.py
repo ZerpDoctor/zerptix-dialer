@@ -123,14 +123,15 @@ class Config:
     sched_first_window: str = "evening"
     sched_tick_seconds: int = 60
     sched_nightly_cap: int = 0  # 0 = unlimited. Process-lifetime count, resets daily (UTC).
-    sched_dial_pacing_seconds: float = 6.0  # delay between dials within one tick, so a
-    # full batch doesn't all go live within the same few seconds (was overwhelming
-    # downstream capacity and the Sheets read quota -- see incident 2026-09-20).
-    # Raised 2s->6s same night: 2s cut the unknown-outcome rate roughly in half
-    # (47%->25-33%) but didn't close it, and raising OUR gunicorn threads had
-    # NOT helped at all -- pointing at a concurrent-call constraint on
-    # SignalWire's side, not ours, so pushing pacing further is the next cheap
-    # (free) lever to pull before building anything new.
+    sched_max_concurrent_calls: int = 5  # bounded dial pool (2026-09-21),
+    # replacing an earlier fixed-delay pacing guess. Real calibration against
+    # live franchise numbers: N=3/5/8 concurrent all came back 0% "unknown"
+    # (blank AMD, zero transcript); an unpaced 21-at-once burst produced 81%
+    # unknown -- a hard cliff somewhere between 8 and 21, not a gradual
+    # slope, consistent with a real concurrent-call ceiling (most likely on
+    # SignalWire's side, since raising OUR OWN gunicorn threads never helped
+    # at all). 5 leaves real headroom below the confirmed-safe zone. See
+    # scheduler.py::pooled_http_dialer.
 
     # Inbound / callback number pool (spec sections 9-10)
     inbound_pool_numbers: list[str] = field(default_factory=list)
@@ -238,7 +239,7 @@ def load() -> Config:
         sched_first_window=_get("SCHED_FIRST_WINDOW", "evening"),
         sched_tick_seconds=int(_get("SCHED_TICK_SECONDS", "60") or "60"),
         sched_nightly_cap=int(_get("SCHED_NIGHTLY_CAP", "0") or "0"),
-        sched_dial_pacing_seconds=float(_get("SCHED_DIAL_PACING_SECONDS", "6.0") or "6.0"),
+        sched_max_concurrent_calls=int(_get("SCHED_MAX_CONCURRENT_CALLS", "5") or "5"),
         inbound_pool_numbers=_e164_list(_get("INBOUND_POOL_NUMBERS", "")),
         inbound_log_tab=_get("INBOUND_LOG_TAB", "Inbound"),
         inbound_reject_reason=_get("INBOUND_REJECT_REASON", "rejected"),
