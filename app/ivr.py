@@ -160,6 +160,20 @@ _ALT_CONTACT_PHRASES = [
     "call my cell", "call my mobile", "call my personal", "call my direct",
     "call me at", "please call me", "reach me at", "reach me directly",
     "you can call me", "you can reach me", "call or text me at",
+    # Broadened 2026-09-21, same night: a *second* real incident (Gold Star
+    # Restoration -- "please hang up and call our emergency line at...")
+    # showed the phrase-list-of-exact-wordings approach still doesn't
+    # generalize even after the first fix above -- "call OUR emergency line"
+    # is organizational framing, not "call MY cell", so none of the phrases
+    # above matched it. Widened to shorter, more general fragments that
+    # catch the whole redirect-to-another-number family regardless of
+    # personal/organizational phrasing, instead of chasing wordings one at a
+    # time. Haiku's own is_alt_contact judgment (plus the has_digit_option
+    # safety rule) is still the real decision -- these fragments only gate
+    # whether it gets consulted, so a broader net here is low-risk.
+    "call our", "dial our", "hang up and call", "please hang up and call",
+    "call another number", "call a different number", "our emergency line",
+    "our direct line", "another line", "a different line",
 ]
 
 _TAIL_HOLD = [
