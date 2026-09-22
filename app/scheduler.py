@@ -21,7 +21,6 @@ import argparse
 import json
 import logging
 import sys
-import threading as _threading
 import time as _time
 import urllib.error
 import urllib.request
@@ -292,51 +291,54 @@ _POOL_MAX_WAIT_SECONDS = 150  # backstop only; every real call already
 # resolves within ivr_master_timeout_seconds (~60s) + a little webhook
 # latency, so this should essentially never actually bind in practice.
 
-_pool_lock = _threading.Lock()
-_pool_inflight_sids: list[str] = []
 
-
-def _call_resolved(call_sid: str) -> bool:
-    """Cheap in-memory check against dialer-web's own CallStore (not the
-    Sheet -- already hit its read-quota limit more than once tonight).
-    Any failure (network hiccup, dialer-web mid-restart) is treated as
-    resolved rather than blocking a pool slot forever on something we can't
-    currently observe -- worst case that slot frees a little early, not a
-    stuck pool."""
-    url = CFG.callback_url(f"calls/{call_sid}/status")
+def _inflight_count() -> int:
+    """Global in-flight count from dialer-web's own CallStore -- the real
+    source of truth, not the Sheet (already hit its read-quota limit more
+    than once tonight). Any failure (network hiccup, dialer-web mid-
+    restart) is treated as 0 rather than blocking the pool forever on
+    something we can't currently observe -- worst case a slot opens a
+    little early, not a stuck pool."""
+    url = CFG.callback_url("calls/inflight_count")
     try:
         with urllib.request.urlopen(url, timeout=10) as r:
-            return bool(json.loads(r.read()).get("resolved", True))
+            return int(json.loads(r.read()).get("count", 0))
     except Exception as e:  # noqa: BLE001
-        log.warning("status check failed for call_sid=%s (%s); treating as resolved", call_sid, e)
-        return True
+        log.warning("inflight-count check failed (%s); treating as 0", e)
+        return 0
 
 
 def pooled_http_dialer(phone: str, *, window: str, local_date_iso: str, from_number: str | None = None) -> str:
     """Bounded-concurrency wrapper around http_dialer (2026-09-21), used as
     the real dialer for both CLI commands below -- waits for a free slot
-    (fewer than CFG.sched_max_concurrent_calls calls still in-flight)
-    before placing the next real call, instead of a blind fixed delay.
-    Calibrated live against real franchise numbers: N=3/5/8 concurrent all
-    resolved with zero 'unknown' outcomes; an unpaced 21-at-once burst
-    produced 81% unknown (blank AMD, zero transcript) -- confirming a real
-    capacity ceiling somewhere between 8 and 21 concurrent calls, not a
-    gradual slope. Deliberately NOT used by sim_quarter.py's injected
-    dialer, which stays instant."""
+    (fewer than CFG.sched_max_concurrent_calls calls still in-flight,
+    globally) before placing the next real call, instead of a blind fixed
+    delay. Calibrated live against real franchise numbers: N=3/5/8
+    concurrent all resolved with zero 'unknown' outcomes; an unpaced
+    21-at-once burst produced 81% unknown (blank AMD, zero transcript) --
+    confirming a real capacity ceiling somewhere between 8 and 21
+    concurrent calls, not a gradual slope.
+
+    Queries dialer-web's global in-flight count directly (via
+    _inflight_count) rather than tracking a local list of this process's
+    own call_sids -- a real incident the same night showed 10 calls truly
+    concurrent despite the cap, traced to exactly that: a worker process
+    restart reset a local list to empty, so the new process assumed 0 in
+    flight and dialed 5 more while the previous process's 5 were still
+    resolving. Asking dialer-web for the real current count instead is
+    immune to that.
+
+    Deliberately NOT used by sim_quarter.py's injected dialer, which stays
+    instant."""
     deadline = _time.time() + _POOL_MAX_WAIT_SECONDS
     while _time.time() < deadline:
-        with _pool_lock:
-            _pool_inflight_sids[:] = [sid for sid in _pool_inflight_sids if not _call_resolved(sid)]
-            if len(_pool_inflight_sids) < CFG.sched_max_concurrent_calls:
-                break
+        if _inflight_count() < CFG.sched_max_concurrent_calls:
+            break
         _time.sleep(_POOL_POLL_SECONDS)
     else:
         log.warning("pooled dialer: no free slot after %ds, dialing anyway", _POOL_MAX_WAIT_SECONDS)
 
-    call_sid = http_dialer(phone, window=window, local_date_iso=local_date_iso, from_number=from_number)
-    with _pool_lock:
-        _pool_inflight_sids.append(call_sid)
-    return call_sid
+    return http_dialer(phone, window=window, local_date_iso=local_date_iso, from_number=from_number)
 
 
 # --------------------------------------------------------------------------- #

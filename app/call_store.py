@@ -102,6 +102,21 @@ class CallStore:
                 for r in self._by_sid.values()
             )
 
+    def inflight_count(self) -> int:
+        """Total calls placed and not yet logged, across ALL destinations --
+        the real, global, single-source-of-truth concurrency count for the
+        scheduler's dial pool (2026-09-21). Deliberately NOT tracked as a
+        local list in the worker process: a real incident showed 10 calls
+        truly concurrent despite a pool cap of 5, traced to the worker's
+        own in-memory tracking resetting to empty on a process restart --
+        a fresh worker process assumed 0 in flight and dialed 5 more while
+        the previous process's 5 were still resolving here. Querying this
+        count directly instead of tracking it locally is immune to that,
+        since a new worker process just asks for the current real number
+        instead of assuming zero."""
+        with self._lock:
+            return sum(1 for r in self._by_sid.values() if not r.logged)
+
     def update(self, call_sid: str, *, to_number: str | None = None, **fields) -> CallRecord:
         """Upsert: create the record if this is the first we've heard of the SID.
 

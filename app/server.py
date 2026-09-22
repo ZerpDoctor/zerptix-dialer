@@ -385,6 +385,22 @@ def call_status(call_sid: str):
     return {"resolved": rec.logged, "known": True}, 200
 
 
+@app.get("/calls/inflight_count")
+def calls_inflight_count():
+    """Global, single-source-of-truth count of calls placed and not yet
+    resolved, across every destination -- real incident 2026-09-21: the
+    scheduler's dial pool tracked its own local list of in-flight call_sids
+    in the worker process's memory, capped at 5, but a genuine interval-
+    overlap analysis of a live batch showed 10 calls truly concurrent at
+    peak. Traced to a worker process restart resetting that local list to
+    empty -- the new process assumed 0 in flight and dialed 5 more while
+    the previous process's 5 were still resolving here. The pool now asks
+    for this count directly instead of tracking it itself, which is immune
+    to that: a fresh worker process gets the real current number, not an
+    assumed zero."""
+    return {"count": STORE.inflight_count()}, 200
+
+
 @app.post("/calls")
 def place_call_endpoint():
     data = request.get_json(silent=True) or request.form
