@@ -196,7 +196,25 @@ def _compute_outcome(rec) -> tuple[str, str]:
         ).strip()
         if cap_transcript:
             decision = ivr.decide_tail(cap_transcript, rec.answered_by)
-            if decision.outcome != "unknown":
+            # amd_fallback means neither a real keyword match NOR a confident
+            # Haiku read found anything -- decide_tail is then trusting AMD's
+            # fast-mode verdict alone, which this codebase already found
+            # unreliable enough that the transcript became the primary signal
+            # in the first place (see decide_tail's own docstring). Doing
+            # exactly that -- confidently trusting AMD -- specifically when
+            # the call ALSO ran the full 60s with nothing more said is the
+            # one place that unreliable signal was still deciding the
+            # outcome on its own. Real incident 2026-09-21: Bluestone
+            # Environmental and Clean Usa Water Mold And Fire Restoration
+            # both captured only a generic opener ("your call is very
+            # important to us" / "call will be recorded"), then real silence
+            # for the rest of a 34-95s call, and got a confident 'voicemail'
+            # from AMD alone -- extended_hold ("silence after ..., likely on
+            # hold") is the honest description of what actually happened,
+            # not a guessed answered/voicemail. Real keyword/Haiku evidence
+            # (the Dry Source Property Restoration case above) still wins
+            # outright -- only the pure-AMD-guess path is downgraded.
+            if decision.outcome != "unknown" and decision.classifier != "amd_fallback":
                 note = f"tail: {decision.reasoning}" if decision.reasoning else ""
                 return decision.outcome, note
         return "extended_hold", "hit 60s master timer with no resolution"
