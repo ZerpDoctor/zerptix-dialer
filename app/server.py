@@ -239,7 +239,15 @@ def _compute_outcome(rec) -> tuple[str, str]:
 
     decision = ivr.decide_tail(transcript, rec.answered_by)
     note = f"tail: {decision.reasoning}" if decision.reasoning else ""
-    if decision.outcome == "unknown":
+    # classifier == "amd_fallback" gets the same honest-unknown treatment as
+    # a genuine "unknown" verdict, added 2026-09-22 alongside the same fix
+    # in hit_time_cap and _conclude_not_menu above: this is the third and
+    # final place a bare AMD guess (Haiku low-confidence or no keyword
+    # match, nothing but AMD's already-established-unreliable fast-mode
+    # verdict) was being trusted as a confident final outcome instead of
+    # honestly flagged as inconclusive. Real keyword/Haiku evidence is
+    # unaffected -- only the pure-guess path changes.
+    if decision.outcome == "unknown" or decision.classifier == "amd_fallback":
         if rec.ivr_detected:
             return "ivr_unresolved", note or "post-menu audio inconclusive; check recording"
         return "unknown", note or "call completed; audio inconclusive"
@@ -694,7 +702,19 @@ def _conclude_not_menu(call_sid: str, rec) -> Response:
         transcript = rec.transcript_accum.strip()
         if transcript:
             decision = ivr.decide_tail(transcript, rec.answered_by)
-            if decision.outcome in ("answered", "voicemail"):
+            # classifier != "amd_fallback" guard added 2026-09-22: real
+            # incident -- Icon Property Rescue resolved 'voicemail' here at
+            # 34s from nothing but a generic "this call may be recorded"
+            # disclosure, Haiku itself reporting low confidence, purely on
+            # AMD's already-established-unreliable fast-mode verdict. Same
+            # gap as the hit_time_cap fix just above in this file, one call
+            # site over: a real keyword/Haiku read still resolves
+            # immediately (that evidence is trustworthy), but a pure
+            # AMD-only guess now falls through to keep listening instead of
+            # ending the call on a signal this codebase already knows not
+            # to trust blindly -- bounded by the outer master timer either
+            # way, which itself no longer blindly trusts AMD either.
+            if decision.outcome in ("answered", "voicemail") and decision.classifier != "amd_fallback":
                 _resolve(call_sid)
                 return _twiml("<Hangup/>")
             return _twiml(_gather("menu", 0, CFG.ivr_tail_gather_seconds))
