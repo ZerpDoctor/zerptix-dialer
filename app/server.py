@@ -790,6 +790,20 @@ def webhook_amd() -> Response:
     log.info("AMD result call_sid=%s AnsweredBy=%s phase=%s", call_sid, answered_by, phase)
 
     if rec and rec.logged:
+        # Real incident 2026-09-22: Tri County Cleaning Systems logged
+        # 'unknown' with answered_by blank, but SignalWire's own Call
+        # resource showed 'machine_start' the whole time -- this webhook
+        # just arrived after _resolve() already wrote the row, and
+        # returning here with no backfill (as before) silently threw away
+        # a real signal we now have. Same pattern as backfill_call_status
+        # for twilio_call_status/duration_sec, applied to answered_by.
+        # Best-effort only -- never let a Sheets failure break webhook
+        # handling, which must always 204 back to SignalWire regardless.
+        if answered_by:
+            try:
+                google_sheets.backfill_answered_by(call_sid, answered_by)
+            except Exception as e:  # noqa: BLE001
+                log.warning("backfill_answered_by failed for call_sid=%s: %s", call_sid, e)
         return Response("", status=204)
 
     ab = answered_by.lower()

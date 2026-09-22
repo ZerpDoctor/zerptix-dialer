@@ -167,6 +167,57 @@ def backfill_call_status(call_sid: str, call_status: str, duration_sec: str = ""
     return False
 
 
+def backfill_answered_by(call_sid: str, answered_by: str) -> bool:
+    """Patch answered_by (and append a note) on an ALREADY-LOGGED row.
+
+    Real incident 2026-09-22: Tri County Cleaning Systems logged 'unknown'
+    with answered_by blank in the Sheet, but SignalWire's own Call resource
+    showed answered_by='machine_start' the whole time -- the AMD webhook
+    arrived AFTER _resolve() had already run and written the row (the call
+    hit some other resolution path first, e.g. the master timeout), and
+    webhook_amd's own 'if rec.logged: return' silently dropped it with no
+    equivalent to backfill_call_status above. Same pattern, same fix: patch
+    the already-logged row instead of discarding real data that arrived
+    late. Does NOT retroactively re-run outcome classification (out of
+    scope, and resolution already committed) -- this only makes the raw AMD
+    signal visible for manual review instead of permanently lost, and only
+    ever adds it (never overwrites a real signal a live call already saw)
+    since it's exclusively reached when answered_by was blank at
+    resolution time."""
+    svc = _service()
+    existing = (
+        svc.spreadsheets()
+        .values()
+        .get(spreadsheetId=CFG.sheet_id, range=f"{CFG.sheet_tab}!A2:{col_letter(len(HEADER) - 1)}100000")
+        .execute()
+        .get("values", [])
+    )
+    sid_idx = HEADER.index("call_sid")
+    ab_idx = HEADER.index("answered_by")
+    notes_idx = HEADER.index("notes")
+
+    for i, raw in enumerate(existing):
+        if sid_idx < len(raw) and raw[sid_idx] == call_sid:
+            already = raw[ab_idx] if ab_idx < len(raw) else ""
+            if already.strip():
+                return False  # a real signal was already seen live; never overwrite it
+            row_number = i + 2
+            old_notes = raw[notes_idx] if notes_idx < len(raw) else ""
+            new_notes = (old_notes + "; " if old_notes else "") + \
+                f"late AMD backfill: answered_by={answered_by!r} arrived after this row was already logged"
+            data = [
+                {"range": f"{CFG.sheet_tab}!{col_letter(ab_idx)}{row_number}", "values": [[answered_by]]},
+                {"range": f"{CFG.sheet_tab}!{col_letter(notes_idx)}{row_number}", "values": [[new_notes]]},
+            ]
+            svc.spreadsheets().values().batchUpdate(
+                spreadsheetId=CFG.sheet_id,
+                body={"valueInputOption": "RAW", "data": data},
+            ).execute()
+            log.info("Backfilled late AMD for call_sid=%s: answered_by=%s", call_sid, answered_by)
+            return True
+    return False
+
+
 def call_sid_already_logged(call_sid: str) -> bool:
     """True if a row for this call_sid already exists in the results tab.
 
