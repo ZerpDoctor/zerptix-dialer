@@ -214,7 +214,15 @@ def _compute_outcome(rec) -> tuple[str, str]:
             # not a guessed answered/voicemail. Real keyword/Haiku evidence
             # (the Dry Source Property Restoration case above) still wins
             # outright -- only the pure-AMD-guess path is downgraded.
-            if decision.outcome != "unknown" and decision.classifier != "amd_fallback":
+            # mentions_incoming_menu guard added 2026-09-22 alongside the
+            # same guard in _conclude_not_menu: a transcript announcing a
+            # menu that never actually arrived (e.g. "please choose from 1
+            # of the following options" with nothing after it) shouldn't be
+            # confidently resolved from the surrounding framing alone, even
+            # via a real (non-amd_fallback) read -- we genuinely don't know
+            # what was in that menu, possibly including an emergency option.
+            if (decision.outcome != "unknown" and decision.classifier != "amd_fallback"
+                    and not ivr.mentions_incoming_menu(cap_transcript)):
                 note = f"tail: {decision.reasoning}" if decision.reasoning else ""
                 return decision.outcome, note
         return "extended_hold", "hit 60s master timer with no resolution"
@@ -247,7 +255,11 @@ def _compute_outcome(rec) -> tuple[str, str]:
     # verdict) was being trusted as a confident final outcome instead of
     # honestly flagged as inconclusive. Real keyword/Haiku evidence is
     # unaffected -- only the pure-guess path changes.
-    if decision.outcome == "unknown" or decision.classifier == "amd_fallback":
+    # mentions_incoming_menu guard added 2026-09-22 alongside the same guard
+    # at the other two resolution sites: a transcript announcing a menu that
+    # never actually arrived shouldn't be trusted even via a real read --
+    # see ivr.mentions_incoming_menu's docstring for the real incident.
+    if decision.outcome == "unknown" or decision.classifier == "amd_fallback" or ivr.mentions_incoming_menu(transcript):
         if rec.ivr_detected:
             return "ivr_unresolved", note or "post-menu audio inconclusive; check recording"
         return "unknown", note or "call completed; audio inconclusive"
@@ -714,7 +726,19 @@ def _conclude_not_menu(call_sid: str, rec) -> Response:
             # ending the call on a signal this codebase already knows not
             # to trust blindly -- bounded by the outer master timer either
             # way, which itself no longer blindly trusts AMD either.
-            if decision.outcome in ("answered", "voicemail") and decision.classifier != "amd_fallback":
+            # mentions_incoming_menu guard added 2026-09-22: real incident --
+            # Epic Restoration's transcript ends at "please choose from 1 of
+            # the following options" with nothing after it, Haiku
+            # confidently (not amd_fallback) read the surrounding
+            # after-hours framing as voicemail, and the call hung up before
+            # ever hearing what those options were -- possibly including an
+            # emergency line. The business just told us more was coming;
+            # trusting a confident-sounding conclusion at that exact moment
+            # is the bug, not the confidence itself. Keep listening at
+            # least one more cycle instead.
+            if (decision.outcome in ("answered", "voicemail")
+                    and decision.classifier != "amd_fallback"
+                    and not ivr.mentions_incoming_menu(transcript)):
                 _resolve(call_sid)
                 return _twiml("<Hangup/>")
             return _twiml(_gather("menu", 0, CFG.ivr_tail_gather_seconds))

@@ -87,6 +87,31 @@ _VOICEMAIL_CONTROL_PHRASES = [
     "to listen to your message", "re-record your message",
 ]
 
+# A transcript that explicitly announces a menu is about to be read out, but
+# cuts off before any actual option is heard -- real incident 2026-09-21:
+# Epic Restoration's transcript ends at "please choose from 1 of the
+# following options" with nothing after it. Haiku confidently read the
+# surrounding "offices are currently closed" framing as voicemail and the
+# call resolved immediately -- a real (not amd_fallback) classifier, so the
+# separate amd_fallback-trust fix doesn't catch this. The bug isn't
+# confidence, it's timing: the business just told us more content -- an
+# actual menu, possibly with an emergency option -- was coming, and we
+# stopped listening right before it arrived. This gates any early
+# conclusion in _conclude_not_menu (server.py) so it keeps listening at
+# least one more cycle instead of confidently guessing what those options
+# might have been.
+_MENU_INCOMING_PHRASES = [
+    "choose from", "choose one of the following", "select one of the following",
+    "following options", "listen carefully as our menu", "here are your options",
+    "please listen to the following", "the following menu", "these options",
+]
+
+
+def mentions_incoming_menu(transcript: str) -> bool:
+    t = (transcript or "").lower()
+    return any(p in t for p in _MENU_INCOMING_PHRASES)
+
+
 # Post-navigation ("tail") classification.
 _TAIL_VOICEMAIL = [
     "leave a message", "leave a detailed message", "leave your name",
