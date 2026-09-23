@@ -238,9 +238,19 @@ def _compute_outcome(rec) -> tuple[str, str]:
     if not transcript:
         if rec.ivr_detected:
             return "extended_hold", "silence after menu navigation (likely on hold / in queue)"
-        by_amd = outcomes.from_amd(rec.answered_by)
-        if by_amd:
-            return by_amd, ""
+        # AMD alone on a connected call with literally nothing transcribed is
+        # the same pure-guess pattern already downgraded at every other
+        # resolution site tonight (2026-09-22) -- AMD's fast-mode verdict
+        # isn't reliable enough to trust blindly, and here there isn't even a
+        # thin transcript to weigh it against. Real incident: Columbus
+        # Restoration, Dry Patrol Akron, Hydrodry Restoration, and Choice
+        # Mold Removal all resolved 'answered' purely on answered_by='human'
+        # with zero transcript captured -- no way to actually verify any of
+        # them, exactly the "single unverified signal" this codebase stopped
+        # trusting everywhere else.
+        ab = (rec.answered_by or "").strip()
+        if ab:
+            return "unknown", f"call completed with AMD={ab!r} but nothing was transcribed; check recording"
         if cs == "completed":
             return "unknown", "call completed; AMD gave no usable result"
         return "unknown", ""
@@ -498,10 +508,38 @@ def place_call_endpoint():
                 ld = _date.fromisoformat(local_date_iso) if local_date_iso else _dt.now(_tz.utc).date()
             except ValueError:
                 ld = _dt.now(_tz.utc).date()
-            fields = queue_writer.record_attempt(
-                q, to_number, call_sid=call_sid, window=window,
-                local_date=ld, now_utc=_dt.now(_tz.utc),
-            )
+            # place_call() above already happened -- irreversible, a real
+            # phone rang. record_attempt() is what stops the NEXT scheduler
+            # tick from redialing this same number, so a transient failure
+            # here (still inside the per-phone lock, so no concurrent tick
+            # can race the retries) must not be allowed to silently drop the
+            # Queue write. Real incident 2026-09-22: Emergency Restoration
+            # Solutions, a real prospect, got dialed 3 times in 4 minutes --
+            # 3 distinct call_sids but current_quarter_attempts only ever
+            # reached 1, meaning 2 of the 3 record_attempt calls never wrote
+            # through, leaving last_call_date unset and the row looking
+            # still-eligible on the next tick. Retrying (same backoff shape
+            # as _write_sheet_with_retry) closes that window.
+            delay = 1.0
+            for i in range(1, 5):
+                try:
+                    fields = queue_writer.record_attempt(
+                        q, to_number, call_sid=call_sid, window=window,
+                        local_date=ld, now_utc=_dt.now(_tz.utc),
+                    )
+                    break
+                except Exception as e:  # noqa: BLE001
+                    if i == 4:
+                        log.error(
+                            "record_attempt FAILED after 4 attempts for %s (call_sid=%s already "
+                            "placed) -- Queue row NOT marked attempted, risk of redial: %s",
+                            to_number, call_sid, e,
+                        )
+                        break
+                    log.warning("record_attempt attempt %d failed for %s (%s); retrying in %.1fs",
+                                i, to_number, e, delay)
+                    time.sleep(delay)
+                    delay *= 2
     log.info("Scheduler call placed %s -> %s from=%s (attempt=%s)", call_sid, to_number, used_from,
              fields.get("current_quarter_attempts") if fields else "not a queued number")
     return {"call_sid": call_sid, "to": to_number, "from_number": used_from,
