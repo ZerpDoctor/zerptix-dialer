@@ -206,6 +206,18 @@ _ALT_CONTACT_PHRASES = [
     "call our", "dial our", "hang up and call", "please hang up and call",
     "call another number", "call a different number", "our emergency line",
     "our direct line", "another line", "a different line",
+    # Broadened again 2026-09-23: a FOURTH real incident, fourth phrasing --
+    # Flood Pros' voicemail ("...if this is any emergency please give our
+    # office a call at 608-756-9300...") logged as plain voicemail. None of
+    # the "call our"/"call my"/"call me at" fragments above match "give our
+    # office A CALL at" -- the verb+object order is reversed from every
+    # phrasing caught so far. decide_tail's own reasoning even named the
+    # emergency number as a marker it saw, then filed it under voicemail
+    # anyway, because the pre-filter never let is_alt_contact get asked at
+    # all. Same shorter-fragment lesson again: "a call at" generalizes over
+    # "give our office a call at", "give us a call at", "give me a call at",
+    # etc. regardless of who's asking.
+    "a call at",
 ]
 
 _TAIL_HOLD = [
