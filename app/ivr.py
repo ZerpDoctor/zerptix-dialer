@@ -173,6 +173,13 @@ _GATEKEEPING_PHRASES = [
 _ALT_CONTACT_PHRASES = [
     "please text", "text this number", "text us at", "text the word",
     "send us a text", "you can text", "reach us by text",
+    # Broadened again 2026-09-22: a THIRD real incident, third phrasing --
+    # Water Pro's voicemail ("if this is an emergency send a text message to
+    # the same number...") logged as plain voicemail. "send us a text" above
+    # doesn't match "send A text message" (no "us"). Same lesson as the
+    # phone-redirect broadening two nights ago: stop chasing exact wordings,
+    # widen to the shorter fragment that actually generalizes.
+    "send a text", "text message to", "to the same number",
     "email us at", "send us an email", "you can email", "email address is",
     "reach us at our email", "for a faster response please email",
     "visit our website", "go to our website", "check out our website",
