@@ -132,6 +132,20 @@ _TAIL_VOICEMAIL = [
 # stronger, identity-establishing phrases can.
 _TAIL_VOICEMAIL_STRONG_IDENTITY = [
     "you have reached the voicemail", "voice mailbox", "voicemail box", "mailbox",
+    # Added 2026-09-23, same night as the split above: a same-night sweep of
+    # every Sep-22 non-menu call against the just-fixed struct_hits gate
+    # found two more real transcripts (Flood Pros, Cera Restoration) whose
+    # OWN recording-management controls ("record your message ... press 1
+    # for more options" / "record your message ... for delivery options
+    # press the pound sign") now passed the struct_hits bypass too -- and
+    # since looks_like_menu() runs before the alt_contact check in the live
+    # turn handler, that would have hijacked Flood Pros' real alt_contact
+    # redirect into pressing the voicemail's own "more options" instead.
+    # "record your message" (unlike "leave a message", which Damage
+    # Control's real menu also uses to describe its OWN option 2) means the
+    # call has already entered a recording state -- everything said next is
+    # about managing that recording, never a way to reach anyone.
+    "record your message",
 ]
 _TAIL_ANSWERED = [
     "hello", "hi there", "this is", "speaking", "how can i help",
