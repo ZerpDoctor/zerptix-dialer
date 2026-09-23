@@ -122,6 +122,17 @@ _TAIL_VOICEMAIL = [
     "our office is closed", "we are currently closed", "please call back during",
     "you've reached", "you have reached the office of",
 ]
+# Subset of _TAIL_VOICEMAIL that unambiguously identifies a personal/generic
+# mailbox no matter what follows -- used only to gate looks_like_menu()'s
+# struct_hits bypass below (added 2026-09-23). The rest of _TAIL_VOICEMAIL
+# ("leave a message", "please leave", etc.) is too generic for that: it
+# matches equally well as a standalone voicemail greeting or as a real
+# business menu's own option description ("press 2 and leave a message"),
+# so it can't safely override genuine menu structure the way these
+# stronger, identity-establishing phrases can.
+_TAIL_VOICEMAIL_STRONG_IDENTITY = [
+    "you have reached the voicemail", "voice mailbox", "voicemail box", "mailbox",
+]
 _TAIL_ANSWERED = [
     "hello", "hi there", "this is", "speaking", "how can i help",
     "how may i help", "thanks for calling", "thank you for calling",
@@ -281,23 +292,35 @@ def looks_like_menu(transcript: str) -> MenuLook:
     # as if it were a business menu, on a REAL PERSON'S PHONE, not a test
     # line; confirmed 2026-09-21). Phrase-blocklisting a voicemail box's
     # near-infinite specific control wordings doesn't generalize and never
-    # will. This is the structural fix: _TAIL_VOICEMAIL is the general,
-    # already-proven-reliable "this is a voicemail greeting" signal used
-    # elsewhere in this file for tail classification -- once ANY of those
-    # phrases has appeared anywhere in this call's transcript so far, we
-    # already know we're listening to a voicemail box, so ANY subsequent
-    # "press N" is almost certainly that box's own controls, regardless of
-    # its specific wording. Checked against the full transcript passed in
-    # (the caller passes the whole accumulated segment, not just the
-    # newest turn), so a control-menu phrase reached via an earlier digit
-    # press within the same voicemail flow is still caught.
-    if any(p in t for p in _TAIL_VOICEMAIL):
+    # will. This is the structural fix: an UNAMBIGUOUS "this is a mailbox"
+    # identity phrase (_TAIL_VOICEMAIL_STRONG_IDENTITY) always wins over any
+    # nearby "press N" -- a personal mailbox's own controls are never a way
+    # to reach a person/department, regardless of wording, so this check
+    # doesn't need struct_hits to decide anything.
+    if any(p in t for p in _TAIL_VOICEMAIL_STRONG_IDENTITY):
+        return MenuLook(False, 0, ["voicemail-greeting-already-established"])
+
+    # The REST of _TAIL_VOICEMAIL ("leave a message", "please leave", "our
+    # office is closed", etc.) is too generic to apply the same way: real
+    # incident 2026-09-23, Damage Control -- "you have reached damage
+    # control if this is an emergency press 1 to be connected to our on
+    # call service... press 2 and leave a message" is a genuine after-hours
+    # business menu WITH a real emergency option, but its own option-2
+    # description contains "leave a message" -- the whole menu, emergency
+    # option included, got silently suppressed as if the box had already
+    # been established as a voicemail from an earlier turn. That assumption
+    # only holds when there's no competing menu structure in the very same
+    # text; when there is, the generic phrase is far more likely describing
+    # what a menu option does than confirming we've already reached a
+    # recording. Only bypass on real "press N" structure, not on the
+    # unambiguous identity phrases above -- those still always win.
+    struct_hits = sum(1 for p in _STRUCT_PATTERNS if p.search(t))
+    if not struct_hits and any(p in t for p in _TAIL_VOICEMAIL):
         return MenuLook(False, 0, ["voicemail-greeting-already-established"])
 
     matched: list[str] = []
     score = 0
 
-    struct_hits = sum(1 for p in _STRUCT_PATTERNS if p.search(t))
     if struct_hits:
         score += 2 * struct_hits
         matched.append(f"menu-structure x{struct_hits}")
