@@ -131,7 +131,20 @@ _TAIL_VOICEMAIL = [
 # so it can't safely override genuine menu structure the way these
 # stronger, identity-establishing phrases can.
 _TAIL_VOICEMAIL_STRONG_IDENTITY = [
-    "you have reached the voicemail", "voice mailbox", "voicemail box", "mailbox",
+    "you have reached the voicemail",
+    # NOT "mailbox"/"voicemail box" (moved back out 2026-09-24, real incident:
+    # Gerloff Company's real after-hours menu -- "if you need immediate
+    # emergency services please press 1 ... press 2 to leave a message in our
+    # general voicemail box" -- named its OWN option 2 destination with
+    # "voicemail box", which unconditionally short-circuited the whole menu
+    # (including the real emergency option 1) before struct_hits was even
+    # weighed, same failure shape as the Damage Control "leave a message"
+    # incident this file already documents below. Unlike "record your
+    # message" (which only ever means the call is ALREADY recording),
+    # "mailbox"/"voicemail box" are commonly just the NAME of where option 2
+    # goes, so they can't safely win unconditionally -- they still catch a
+    # real personal mailbox via the general _TAIL_VOICEMAIL list below, which
+    # IS gated on the absence of real menu structure.
     # Added 2026-09-23, same night as the split above: a same-night sweep of
     # every Sep-22 non-menu call against the just-fixed struct_hits gate
     # found two more real transcripts (Flood Pros, Cera Restoration) whose
