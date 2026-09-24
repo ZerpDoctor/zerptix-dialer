@@ -266,6 +266,14 @@ _TAIL_HOLD = [
     # confident primary path, never reaches this fallback at all).
     "connecting you now", "connecting you", "transferring your call",
     "please hold while we connect", "one moment while we connect",
+    # Added 2026-09-23/24, Lake Effect Restoration real incident: Haiku's
+    # primary (high-confidence) read wrongly called this a live human because
+    # of a garbled trailing "...connect you help you" fragment tacked onto a
+    # scripted after-hours transfer announcement (see the matching prompt
+    # rule in anthropic_client._CALL_AUDIO_SYSTEM). This keyword-fallback
+    # entry is defense-in-depth for the same phrasing when Haiku is
+    # unavailable/low-confidence instead of confidently wrong.
+    "try to connect you",
 ]
 
 
