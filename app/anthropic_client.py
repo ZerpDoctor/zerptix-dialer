@@ -109,13 +109,20 @@ _CALL_AUDIO_SYSTEM = (
     "involved, or this is the audio captured after IVR menu navigation finished). "
     "The transcript may be short, garbled by imperfect speech-to-text, or just a "
     "word or two. Decide whether: "
-    "(a) a LIVE HUMAN spoke -- a real person answering, greeting the caller, "
-    "identifying themselves or their business, asking a question, or reacting to "
-    "silence (e.g. repeating 'hello' -- a person doing that IS a live human, not "
-    "a machine, since the dialer never speaks back); "
+    "(a) a LIVE HUMAN OR A RESPONSIVE AI VOICE AGENT spoke -- a real person, or an "
+    "interactive AI assistant that behaves like a live answer: greeting the caller, "
+    "identifying the business, engaging with what would come next, or reacting to "
+    "silence/dead air (e.g. repeating 'hello', or 'I think the signal dropped, are "
+    "you there?' -- reacting to unexpected silence IS a live/responsive answer, not "
+    "a dead-end recording, since the dialer never speaks back -- this applies "
+    "equally whether the speaker is a person or an AI agent). The system explicitly "
+    "calling itself an 'AI assistant' or 'automated' does NOT by itself make it "
+    "MACHINE/RECORDING (b) -- the discriminator is whether it is actually reactive "
+    "(responds to the conversation, notices dead air) versus a fixed one-way script "
+    "that plays the same way regardless of what the caller does; "
     "(b) this is a MACHINE/RECORDING -- a voicemail greeting, 'leave a message', "
     "an automated business-status or after-hours announcement, or similar scripted "
-    "playback; or "
+    "playback that never reacts to the caller; or "
     "(c) this is HOLD language -- 'please hold', queue/wait music description, "
     "'your call is important to us'. "
     "Do not assume length correlates with which is true -- a live person's greeting "
@@ -123,10 +130,20 @@ _CALL_AUDIO_SYSTEM = (
     "JUST a business name and nothing else (e.g. 'Phoenix Flood and Fire', 'Apex "
     "Restoration') is a LIVE HUMAN answering with HIGH confidence, not an ambiguous "
     "or low-signal case -- real businesses very commonly answer the phone with only "
-    "their name. Only drop to low confidence for a bare name/greeting fragment if "
-    "there is actual competing signal toward voicemail (e.g. 'leave a message', "
+    "their name. If an expected company name is given below and the transcript is a "
+    "short fragment that plausibly matches it (even a partial/garbled match, e.g. "
+    "'deep water' for 'Deep Water Emergency Services'), treat that the same as a "
+    "bare business name -- a truncated capture of the same live answer, not a reason "
+    "for low confidence. Only drop to low confidence for a bare name/greeting fragment "
+    "if there is actual competing signal toward voicemail (e.g. 'leave a message', "
     "'is not available', 'at the tone', 'mailbox') -- the mere absence of a question "
-    "or more words is not itself a reason for low confidence. Conversely, a transcript "
+    "or more words is not itself a reason for low confidence. A bare 'thank you for "
+    "calling' with NOTHING else -- no name, no question, no further content -- is "
+    "NOT the same as a bare business name: that exact opener is used equally by a "
+    "live pickup ('thank you for calling, this is Dana') and a voicemail/after-hours "
+    "greeting ('thank you for calling, we are currently closed...') that just got cut "
+    "off before the rest played -- report low confidence, not high, when nothing "
+    "after it reveals which one this was. Conversely, a transcript "
     "that is ONLY a generic call-recording/legal disclosure (e.g. 'this call may be "
     "recorded for quality assurance purposes', 'this call may be monitored') with "
     "NOTHING else -- no greeting, no name, no business identification, no question, "
@@ -175,9 +192,12 @@ def _extract_json(text: str) -> dict:
         raise AnthropicUnavailable(f"model reply was not valid JSON: {e}") from e
 
 
-def _call_haiku(system: str, transcript: str) -> dict:
+def _call_haiku(system: str, transcript: str, *, extra_context: str = "") -> dict:
     """Shared plumbing: one single-purpose Haiku call, raising AnthropicUnavailable
-    on any failure mode (missing key, auth, billing, timeout, bad JSON)."""
+    on any failure mode (missing key, auth, billing, timeout, bad JSON). extra_context,
+    when given, is a line placed before the transcript block (e.g. the expected
+    company name, used by classify_call_audio to recognize a truncated name
+    fragment -- see _CALL_AUDIO_SYSTEM)."""
     if not CFG.anthropic_api_key:
         raise AnthropicUnavailable("ANTHROPIC_API_KEY is not set")
 
@@ -188,12 +208,13 @@ def _call_haiku(system: str, transcript: str) -> dict:
 
     client = anthropic.Anthropic(api_key=CFG.anthropic_api_key, max_retries=1, timeout=12.0)
 
+    prefix = f"{extra_context}\n\n" if extra_context else ""
     try:
         resp = client.messages.create(
             model=CFG.anthropic_model,
             max_tokens=300,
             system=system,
-            messages=[{"role": "user", "content": f"Transcript:\n\"\"\"\n{transcript}\n\"\"\""}],
+            messages=[{"role": "user", "content": f"{prefix}Transcript:\n\"\"\"\n{transcript}\n\"\"\""}],
         )
     except Exception as e:  # noqa: BLE001 - normalize every failure mode
         # anthropic.APIStatusError / AuthenticationError / RateLimitError /
@@ -275,15 +296,23 @@ def classify_alt_contact(transcript: str) -> dict:
     }
 
 
-def classify_call_audio(transcript: str) -> dict:
+def classify_call_audio(transcript: str, company_name: str = "") -> dict:
     """Returns {is_human, is_voicemail, is_hold, confidence, reasoning}.
     Raises AnthropicUnavailable on any problem. Used to judge what really
     happened on a call from its transcript -- the transcript is the primary
     signal (mirroring how menu calls already trust the transcript over AMD),
     with AMD only consulted as a fallback when this is unavailable or the
     transcript gives no usable signal. See app/ivr.py::decide_tail.
+
+    company_name, when known (from the Queue row we dialed), is passed as
+    context so a short fragment that's really a truncated capture of the
+    business's own name (e.g. transcript 'deep water' for 'Deep Water
+    Emergency Services') can be recognized as a bare-name live answer
+    instead of scored low-confidence for looking too generic -- real
+    incident 2026-09-24, Deep Water Emergency Services.
     """
-    data = _call_haiku(_CALL_AUDIO_SYSTEM, transcript)
+    extra = f"Expected company name (from caller lookup; may not exactly match): {company_name}" if company_name else ""
+    data = _call_haiku(_CALL_AUDIO_SYSTEM, transcript, extra_context=extra)
 
     if not any(k in data for k in ("is_human", "is_voicemail", "is_hold")):
         raise AnthropicUnavailable(f"reply missing expected keys: {data!r}")

@@ -661,7 +661,7 @@ class TailDecision:
     conflicts_with_amd: bool  # True when we overrode a real AMD signal
 
 
-def decide_tail(transcript: str, answered_by: str | None) -> TailDecision:
+def decide_tail(transcript: str, answered_by: str | None, company_name: str = "") -> TailDecision:
     """Single source of truth for 'what actually happened on this call', used
     for BOTH the post-menu-navigation tail AND plain non-menu calls.
 
@@ -673,6 +673,10 @@ def decide_tail(transcript: str, answered_by: str | None) -> TailDecision:
     Haiku is unavailable or genuinely unconfident, and even then only after the
     keyword list finds nothing -- never silently overridden without a reason
     logged in `reasoning`.
+
+    company_name (the Queue row's own name, if known) is passed through to
+    classify_call_audio so a truncated name fragment can be recognized as a
+    bare-name live answer -- see that function's docstring.
     """
     amd_guess = outcomes.from_amd(answered_by)  # "answered" | "voicemail" | None
 
@@ -686,7 +690,7 @@ def decide_tail(transcript: str, answered_by: str | None) -> TailDecision:
         return TailDecision("unknown", "keyword", f"{prefix}; inconclusive", False)
 
     try:
-        h = classify_call_audio(transcript)
+        h = classify_call_audio(transcript, company_name)
     except AnthropicUnavailable as e:
         log.error("ANTHROPIC API ERROR (check billing / key): %s", e)
         return _from_keyword_or_amd(f"anthropic unavailable ({e})")

@@ -195,7 +195,7 @@ def _compute_outcome(rec) -> tuple[str, str]:
             else rec.transcript_accum
         ).strip()
         if cap_transcript:
-            decision = ivr.decide_tail(cap_transcript, rec.answered_by)
+            decision = ivr.decide_tail(cap_transcript, rec.answered_by, rec.company_name)
             # amd_fallback means neither a real keyword match NOR a confident
             # Haiku read found anything -- decide_tail is then trusting AMD's
             # fast-mode verdict alone, which this codebase already found
@@ -255,7 +255,7 @@ def _compute_outcome(rec) -> tuple[str, str]:
             return "unknown", "call completed; AMD gave no usable result"
         return "unknown", ""
 
-    decision = ivr.decide_tail(transcript, rec.answered_by)
+    decision = ivr.decide_tail(transcript, rec.answered_by, rec.company_name)
     note = f"tail: {decision.reasoning}" if decision.reasoning else ""
     # classifier == "amd_fallback" gets the same honest-unknown treatment as
     # a genuine "unknown" verdict, added 2026-09-22 alongside the same fix
@@ -710,7 +710,7 @@ def ivr_turn(stage: str, level: int) -> Response:
     # and _conclude_not_menu: a scripted message can still be leading into a
     # real menu or reveal itself as voicemail later.
     if rec.gather_count >= 2:
-        early = ivr.decide_tail(segment, rec.answered_by)
+        early = ivr.decide_tail(segment, rec.answered_by, rec.company_name)
         if early.outcome == "answered":
             log.info("IVR early-resolve call_sid=%s: confident answered on turn %d (%s)",
                       call_sid, rec.gather_count, early.reasoning)
@@ -727,7 +727,7 @@ def ivr_turn(stage: str, level: int) -> Response:
     # no reason to make a live person wait the same window used elsewhere to
     # avoid truncating a long disclosure -- confirm/deny much sooner instead.
     if rec.gather_count == 1:
-        early = ivr.decide_tail(segment, rec.answered_by)
+        early = ivr.decide_tail(segment, rec.answered_by, rec.company_name)
         if early.outcome == "answered":
             return _twiml(_gather("menu", level, CFG.ivr_confirm_gather_seconds))
 
@@ -753,7 +753,7 @@ def _conclude_not_menu(call_sid: str, rec) -> Response:
         # anything else keeps listening, bounded by the outer master timer.
         transcript = rec.transcript_accum.strip()
         if transcript:
-            decision = ivr.decide_tail(transcript, rec.answered_by)
+            decision = ivr.decide_tail(transcript, rec.answered_by, rec.company_name)
             # classifier != "amd_fallback" guard added 2026-09-22: real
             # incident -- Icon Property Rescue resolved 'voicemail' here at
             # 34s from nothing but a generic "this call may be recorded"
