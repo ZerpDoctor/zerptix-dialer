@@ -331,25 +331,49 @@ def _build_row(rec, outcome: str, note: str) -> dict:
 def _update_queue_row(rec, outcome: str) -> None:
     """If this call's number belongs to a company in the Queue tab, write the
     outcome + quarter status back to that row (spec section 7), under the
-    per-phone write lock. Best-effort -- never breaks call resolution."""
-    try:
-        from .queue_backend import SheetQueue
-        from . import queue_writer
+    per-phone write lock.
 
-        q = SheetQueue(CFG.sched_queue_tab)
-        fields = queue_writer.apply_outcome(
-            q, rec.to_number, outcome,
-            call_sid=rec.call_sid,
-            recording_url=rec.recording_url or "",
-            ivr_flagged=rec.ivr_fallback_flagged,
-            heal_missed_attempt=rec.is_scheduled_attempt,
-        )
-        if fields is None:
-            return  # not a queued company
-        log.info("Queue write-back: %s -> %s", rec.to_number,
-                 fields.get("this_quarter_status", "in_progress (unchanged)"))
-    except Exception as e:  # noqa: BLE001
-        log.warning("Queue write-back failed for %s: %s", rec.call_sid, e)
+    Retries on transient failure -- same backoff shape as record_attempt's
+    own retry and _write_sheet_with_retry. Real incident 2026-09-25, found
+    via live testing: Alpha Restoration's Queue row never got today's
+    outcome at all (last_outcome/last_updated_at/call_sid_history all still
+    showed a call from two days earlier) even though the Calls tab logged
+    the real result correctly -- this call site had a bare try/except that
+    silently gave up on the first failure with no retry and no
+    reconciliation, the exact same unsafe shape record_attempt's own retry
+    was already added to fix. A burst of rapid test calls is exactly the
+    kind of transient-Sheets-load window that trips this."""
+    from .queue_backend import SheetQueue
+    from . import queue_writer
+
+    q = SheetQueue(CFG.sched_queue_tab)
+    delay = 1.0
+    for i in range(1, 5):
+        try:
+            fields = queue_writer.apply_outcome(
+                q, rec.to_number, outcome,
+                call_sid=rec.call_sid,
+                recording_url=rec.recording_url or "",
+                ivr_flagged=rec.ivr_fallback_flagged,
+                heal_missed_attempt=rec.is_scheduled_attempt,
+            )
+            if fields is None:
+                return  # not a queued company
+            log.info("Queue write-back: %s -> %s", rec.to_number,
+                     fields.get("this_quarter_status", "in_progress (unchanged)"))
+            return
+        except Exception as e:  # noqa: BLE001
+            if i == 4:
+                log.error(
+                    "Queue write-back FAILED after 4 attempts for %s (call_sid=%s) -- "
+                    "outcome logged to Calls tab but Queue row NOT updated: %s",
+                    rec.to_number, rec.call_sid, e,
+                )
+                return
+            log.warning("Queue write-back attempt %d failed for %s (%s); retrying in %.1fs",
+                        i, rec.to_number, e, delay)
+            time.sleep(delay)
+            delay *= 2
 
 
 def _resolve(call_sid: str, hangup: bool = True, recovered: bool = False) -> None:
