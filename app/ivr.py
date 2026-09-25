@@ -159,6 +159,17 @@ _TAIL_VOICEMAIL_STRONG_IDENTITY = [
     # call has already entered a recording state -- everything said next is
     # about managing that recording, never a way to reach anyone.
     "record your message",
+    # Added 2026-09-25, real incident found via live testing: Biorestoration's
+    # voicemail box loops "...you may hang up or press 1 for more options"
+    # BEFORE the phrase "record your message" appears (that only shows up in
+    # a later loop iteration) -- so at the exact turn the digit decision gets
+    # made, struct_hits alone won and pressed 1 into the mailbox's own
+    # controls. "hang up or press N for more options" is itself an
+    # unambiguous recording-management idiom no real business menu uses (a
+    # real menu's options reach departments/people, never "more options"
+    # about a recording) -- doesn't need to wait for "record your message"
+    # to show up in a later turn to be recognized.
+    "hang up or press",
 ]
 _TAIL_ANSWERED = [
     "hello", "hi there", "this is", "speaking", "how can i help",
@@ -256,6 +267,19 @@ _ALT_CONTACT_PHRASES = [
     # "give our office a call at", "give us a call at", "give me a call at",
     # etc. regardless of who's asking.
     "a call at",
+    # Broadened again 2026-09-25: a FIFTH real incident, fifth phrasing, found
+    # via live testing -- Cooks Proclean And Restoration's voicemail ("if this
+    # is an emergency you can also reach Becky cook at 706-988-2664") named a
+    # PERSON in third person, not "me"/"my"/"our" -- none of the phrases above
+    # match "reach [a name] at [number]" since they all assume first-person
+    # or organizational framing. This call happened to still resolve to
+    # voicemail correctly anyway (real voicemail language followed), but the
+    # same lesson applies before it doesn't matter on some other call: the
+    # actual decision is still Haiku's, gated by has_digit_option, so widen
+    # the pre-filter rather than chase this exact wording too. NOT a bare
+    # "reach" -- too generic, would gate-in unrelated content like "reach a
+    # representative" menu offers on every call.
+    "can also reach", "you can reach",
 ]
 
 _TAIL_HOLD = [
