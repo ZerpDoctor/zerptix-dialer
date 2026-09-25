@@ -438,6 +438,27 @@ def _resolve(call_sid: str, hangup: bool = True, recovered: bool = False) -> Non
             return
     if hangup:
         hang_up(call_sid)
+    if CFG.stream_transcription_enabled:
+        # Real incident 2026-09-25: Mays answered, Deepgram correctly
+        # captured a real greeting plus three "Hello?"s (a person reacting
+        # to silence, textbook answered), but the call ended in 18s and
+        # never once completed a full Gather cycle -- DTMF-only Gather has
+        # nothing to end a turn early on besides an actual digit press, so
+        # with no digits pressed it just runs its full fixed timeout, and a
+        # call that hangs up before that timeout elapses never fires a
+        # single /ivr/turn. The transcript was sitting in the buffer the
+        # whole time, correctly captured, just never read by anything. Only
+        # backfill when transcript_accum is still empty -- a call that DID
+        # complete at least one real turn (menu navigation, a tail read)
+        # already has its transcript built the normal way; this is purely
+        # for the case where that never got the chance to happen at all.
+        pre = STORE.get(call_sid)
+        if pre is not None and not pre.transcript_accum:
+            buffered = media_stream.get_buffer(call_sid).full_text()
+            if buffered:
+                log.info("Backfilling transcript from stream buffer for call_sid=%s (no turn ever completed): %r",
+                          call_sid, buffered[:200])
+                STORE.update(call_sid, transcript_accum=buffered)
     # snapshot, not get(): _compute_outcome() and _build_row() both read rec's
     # fields, and a concurrent webhook thread mutating the live record in
     # between the two would decide the outcome from one instant and build the
