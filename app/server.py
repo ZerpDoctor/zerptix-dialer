@@ -28,6 +28,7 @@ import time
 from datetime import datetime, timezone
 
 from flask import Flask, Response, request
+from flask_sock import Sock
 from twilio.request_validator import RequestValidator
 
 from .config import CFG
@@ -35,6 +36,7 @@ from .call_store import STORE
 from . import outcomes
 from . import google_sheets
 from . import ivr
+from . import media_stream
 from .dialer import hang_up, place_call, DialError
 
 logging.basicConfig(
@@ -44,6 +46,7 @@ logging.basicConfig(
 log = logging.getLogger("dialer.server")
 
 app = Flask(__name__)
+sock = Sock(app)
 
 # Both providers verify webhooks with the exact same HMAC-SHA1(secret, url +
 # sorted-concatenated-form-params) scheme -- confirmed by reading SignalWire's
@@ -121,12 +124,32 @@ def _twiml(body: str) -> Response:
 
 def _gather(stage: str, level: int, timeout: int) -> str:
     action = CFG.callback_url(f"ivr/turn/{stage}/{level}")
+    # STREAM_TRANSCRIPTION_ENABLED: drop the speech recognition SignalWire
+    # would otherwise bill for on this verb -- the Media Stream (started
+    # once, in /ivr/start) is providing the transcript instead. Gather still
+    # does its original job unmodified: DTMF capture and the same
+    # timeout/actionOnEmptyResult turn-cadence every call site here already
+    # relies on.
+    input_modes = "dtmf" if CFG.stream_transcription_enabled else "speech"
+    speech_attrs = (
+        "" if CFG.stream_transcription_enabled
+        else f'speechTimeout="auto" speechModel="{CFG.ivr_speech_model}" language="en-US" '
+    )
     return (
-        f'<Gather input="speech" speechTimeout="auto" '
-        f'speechModel="{CFG.ivr_speech_model}" language="en-US" '
+        f'<Gather input="{input_modes}" {speech_attrs}'
         f'timeout="{timeout}" actionOnEmptyResult="true" '
         f'method="POST" action="{action}"/>'
     )
+
+
+@sock.route("/media-stream/<call_sid>")
+def media_stream_ws(ws, call_sid: str) -> None:
+    """SignalWire connects to this as a WebSocket when a call's TwiML
+    includes <Start><Stream .../></Start> (only added when
+    STREAM_TRANSCRIPTION_ENABLED). Runs for the call's lifetime on its own
+    gunicorn gthread worker thread; see media_stream.py for the actual
+    SignalWire<->Deepgram relay."""
+    media_stream.handle_signalwire_stream(ws, call_sid)
 
 
 def _amd_pause_seconds(call_sid: str) -> int:
@@ -430,6 +453,7 @@ def _resolve(call_sid: str, hangup: bool = True, recovered: bool = False) -> Non
         ",".join(rec.digits_sent) or "-", rec.classifier, rec.ivr_fallback_flagged,
     )
     _update_queue_row(rec, outcome)
+    media_stream.drop_buffer(call_sid)  # no-op if this call never had one
 
 
 # --------------------------------------------------------------------------- #
@@ -587,7 +611,20 @@ def ivr_start() -> Response:
 
     if not CFG.ivr_enabled:
         return _twiml(f'<Pause length="{CFG.amd_wait_seconds}"/><Hangup/>')
-    return _twiml(_gather("menu", 0, CFG.ivr_initial_timeout_seconds))
+    if CFG.stream_diagnostic_no_gather:
+        # ONE-OFF DIAGNOSTIC (see config.py) -- Stream only, zero Gather, to
+        # isolate whether Speech Recognition billing is coming from Stream
+        # itself or from Gather even in dtmf-only mode.
+        stream_url = CFG.stream_url(f"media-stream/{call_sid}")
+        log.info("DIAGNOSTIC call_sid=%s: Stream-only, no Gather at all", call_sid)
+        return _twiml(f'<Start><Stream url="{stream_url}"/></Start><Pause length="25"/><Hangup/>')
+    stream = ""
+    if CFG.stream_transcription_enabled:
+        # <Start> is asynchronous -- per SignalWire's own docs it "continues
+        # with the next cXML instruction at once" -- so this runs alongside
+        # the Gather below for the whole call, not instead of it.
+        stream = f'<Start><Stream url="{CFG.stream_url(f"media-stream/{call_sid}")}"/></Start>'
+    return _twiml(stream + _gather("menu", 0, CFG.ivr_initial_timeout_seconds))
 
 
 @app.post("/ivr/turn/<stage>/<int:level>")
@@ -596,7 +633,15 @@ def ivr_turn(stage: str, level: int) -> Response:
         return Response("invalid signature", status=403)
 
     call_sid = request.form.get("CallSid", "")
-    speech = (request.form.get("SpeechResult") or "").strip()
+    if CFG.stream_transcription_enabled:
+        # Gather is DTMF-only in this mode (see _gather) -- SpeechResult is
+        # never populated, the buffer media_stream.py fills from Deepgram is
+        # the real source now. text_since_last_read() returns only what
+        # arrived since the PREVIOUS turn, the same per-turn shape
+        # SpeechResult already had.
+        speech = media_stream.get_buffer(call_sid).text_since_last_read()
+    else:
+        speech = (request.form.get("SpeechResult") or "").strip()
     STORE.update(call_sid, to_number=request.form.get("To") or None)
     STORE.ensure_answered(call_sid)
     rec = STORE.add_turn(call_sid, speech)

@@ -85,6 +85,23 @@ class Config:
     anthropic_api_key: str
     anthropic_model: str = "claude-haiku-4-5"
 
+    # Deepgram (real-time transcription over a SignalWire Media Stream --
+    # replaces SignalWire's own Gather speech recognition, which is the
+    # dominant cost line, ~12x Deepgram's rate for the same audio). Feature-
+    # flagged: OFF by default, so nothing about tonight's real calling
+    # changes until explicitly enabled and validated.
+    deepgram_api_key: str = ""
+    stream_transcription_enabled: bool = False
+    # ONE-OFF DIAGNOSTIC, 2026-09-25: isolates whether SignalWire's "Speech
+    # Recognition" billing line is coming from Gather's own engine (even in
+    # dtmf-only mode) or from the Stream verb itself -- real calls today
+    # billed Speech Recognition at basically the same rate whether or not
+    # Gather requested speech input, and every test had Stream running
+    # alongside Gather, so the two are still confounded. When true, /ivr/start
+    # opens the Stream and then just Pauses/hangs up -- no Gather at all.
+    # Remove this flag and its one call site once the answer is known.
+    stream_diagnostic_no_gather: bool = False
+
     # Dialer behaviour
     test_mode: bool = True
     test_allowlist: list[str] = field(default_factory=list)
@@ -197,6 +214,13 @@ class Config:
     def callback_url(self, path: str) -> str:
         return self.public_base_url.rstrip("/") + "/" + path.lstrip("/")
 
+    def stream_url(self, path: str) -> str:
+        """Same as callback_url but wss://, for the Media Stream verb --
+        SignalWire connects out to this as a WebSocket, not a webhook."""
+        base = self.public_base_url.rstrip("/")
+        base = base.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
+        return base + "/" + path.lstrip("/")
+
 
 def load() -> Config:
     _sw_from_single = _get("SIGNALWIRE_FROM_NUMBER")
@@ -214,6 +238,9 @@ def load() -> Config:
         sheet_tab=_get("GOOGLE_SHEET_TAB", "Calls"),
         anthropic_api_key=_get("ANTHROPIC_API_KEY"),
         anthropic_model=_get("ANTHROPIC_MODEL", "claude-haiku-4-5"),
+        deepgram_api_key=_get("DEEPGRAM_API_KEY", ""),
+        stream_transcription_enabled=_bool("STREAM_TRANSCRIPTION_ENABLED", False),
+        stream_diagnostic_no_gather=_bool("STREAM_DIAGNOSTIC_NO_GATHER", False),
         test_mode=_bool("TEST_MODE", True),
         test_allowlist=_e164_list(_get("TEST_ALLOWLIST", "")),
         machine_detection=_get("MACHINE_DETECTION", "Enable"),
