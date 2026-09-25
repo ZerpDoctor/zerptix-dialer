@@ -148,8 +148,18 @@ def media_stream_ws(ws, call_sid: str) -> None:
     includes <Start><Stream .../></Start> (only added when
     STREAM_TRANSCRIPTION_ENABLED). Runs for the call's lifetime on its own
     gunicorn gthread worker thread; see media_stream.py for the actual
-    SignalWire<->Deepgram relay."""
-    media_stream.handle_signalwire_stream(ws, call_sid)
+    SignalWire<->Deepgram relay.
+
+    Logged as its own checkpoint (2026-09-25 diagnostic): some real calls
+    show zero media_stream.py log output at all -- no connect, no error,
+    nothing -- meaning SignalWire never actually reached this route, as
+    distinct from reaching it and failing inside handle_signalwire_stream.
+    This line is the only way to tell those two failure shapes apart."""
+    log.info("media_stream_ws route HIT for call_sid=%s -- WebSocket connection accepted", call_sid)
+    try:
+        media_stream.handle_signalwire_stream(ws, call_sid)
+    except Exception as e:  # noqa: BLE001 -- a WS handler exception must not affect the call itself
+        log.error("media_stream_ws route CRASHED for call_sid=%s: %s", call_sid, e, exc_info=True)
 
 
 def _amd_pause_seconds(call_sid: str) -> int:
@@ -644,7 +654,9 @@ def ivr_start() -> Response:
         # <Start> is asynchronous -- per SignalWire's own docs it "continues
         # with the next cXML instruction at once" -- so this runs alongside
         # the Gather below for the whole call, not instead of it.
-        stream = f'<Start><Stream url="{CFG.stream_url(f"media-stream/{call_sid}")}"/></Start>'
+        stream_url = CFG.stream_url(f"media-stream/{call_sid}")
+        stream = f'<Start><Stream url="{stream_url}"/></Start>'
+        log.info("Requesting Media Stream for call_sid=%s at %s", call_sid, stream_url)
     return _twiml(stream + _gather("menu", 0, CFG.ivr_initial_timeout_seconds))
 
 
