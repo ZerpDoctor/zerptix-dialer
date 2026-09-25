@@ -222,6 +222,12 @@ _GATEKEEPING_PHRASES = [
 _ALT_CONTACT_PHRASES = [
     "please text", "text this number", "text us at", "text the word",
     "send us a text", "you can text", "reach us by text",
+    # Added 2026-09-25, found via live testing: Ambar Mold's voicemail
+    # ("for a quicker response text me your information") uses first-person
+    # "text me", the same personal-framing gap the phone-redirect list below
+    # already had to fix once ("call my cell" vs. "call our") -- same lesson,
+    # applied to text before a real incident needed it to matter.
+    "text me",
     # Broadened again 2026-09-22: a THIRD real incident, third phrasing --
     # Water Pro's voicemail ("if this is an emergency send a text message to
     # the same number...") logged as plain voicemail. "send us a text" above
