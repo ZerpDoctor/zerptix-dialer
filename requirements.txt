@@ -1,4 +1,6 @@
 flask>=3.0,<4.0
+flask-sock==0.7.0
+simple-websocket==1.1.0
 gunicorn>=22.0
 twilio>=9.3,<10.0
 google-auth>=2.30
