@@ -342,6 +342,7 @@ def _update_queue_row(rec, outcome: str) -> None:
             call_sid=rec.call_sid,
             recording_url=rec.recording_url or "",
             ivr_flagged=rec.ivr_fallback_flagged,
+            heal_missed_attempt=rec.is_scheduled_attempt,
         )
         if fields is None:
             return  # not a queued company
@@ -500,7 +501,8 @@ def place_call_endpoint():
         used_from = from_number or CFG.signalwire_from_number
         STORE.register(call_sid, to_number, from_number=used_from,
                         company_name=row.company_name if row is not None else "",
-                        company_timezone=row.timezone if row is not None else "")
+                        company_timezone=row.timezone if row is not None else "",
+                        is_scheduled_attempt=True)
 
         fields = None
         if row is not None:

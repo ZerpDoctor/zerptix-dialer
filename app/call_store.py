@@ -22,6 +22,11 @@ class CallRecord:
     company_timezone: str = ""          # was a scheduler-placed call -- avoids a
     # second, redundant Sheets read at resolution time just to look these up
     # again by phone number (see google_sheets read-quota incident 2026-09-20).
+    is_scheduled_attempt: bool = False  # True only for a real scheduler-placed
+    # dial (record_attempt=true at /calls). Gates queue_writer.apply_outcome's
+    # record_attempt self-heal (see that function's docstring) -- a manual/test
+    # call to a real Queue number must never touch attempts/last_call_date/
+    # next_eligible_date just because it happened to resolve.
     placed_at: float = field(default_factory=time.time)
     answered_by: str | None = None      # buffered AMD AnsweredBy
     call_status: str | None = None
@@ -59,10 +64,12 @@ class CallStore:
         self._by_sid: dict[str, CallRecord] = {}
 
     def register(self, call_sid: str, to_number: str, from_number: str = "",
-                 company_name: str = "", company_timezone: str = "") -> CallRecord:
+                 company_name: str = "", company_timezone: str = "",
+                 is_scheduled_attempt: bool = False) -> CallRecord:
         with self._lock:
             rec = CallRecord(call_sid=call_sid, to_number=to_number, from_number=from_number,
-                              company_name=company_name, company_timezone=company_timezone)
+                              company_name=company_name, company_timezone=company_timezone,
+                              is_scheduled_attempt=is_scheduled_attempt)
             self._by_sid[call_sid] = rec
             return rec
 

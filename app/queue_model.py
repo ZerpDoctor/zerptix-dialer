@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from .config import CFG
+
 # Column order == spec section 2. Index in this list == 0-based column index.
 HEADER = [
     "company_name",              # 0  A
@@ -172,3 +174,13 @@ def append_csv(existing: str, value: str) -> str:
 
 def row_from_dict(d: dict, row_number: int = 0) -> QueueRow:
     return QueueRow(row_number=row_number, raw=[str(d.get(h, "")) for h in HEADER])
+
+
+def next_window_for(row: QueueRow) -> str:
+    """Which window (evening/deep_night) this row's NEXT attempt should use,
+    alternating from its last one. Shared by scheduler.py (deciding whether a
+    row is due right now) and queue_writer.py (self-healing a record_attempt
+    that never wrote through -- see apply_outcome's fallback)."""
+    if not row.last_call_window:
+        return CFG.sched_first_window
+    return "deep_night" if row.last_call_window == "evening" else "evening"

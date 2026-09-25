@@ -21,7 +21,9 @@ from .queue_model import (
     STATUS_CONFIRMED_COVERED,
     STATUS_CONFIRMED_MISS,
     append_csv,
+    next_window_for,
 )
+from .timezones import parse_tz
 
 log = logging.getLogger("dialer.queue_writer")
 
@@ -65,6 +67,7 @@ def record_attempt(queue, phone: str, *, call_sid: str, window: str,
 
 def apply_outcome(queue, phone: str, outcome: str, *, call_sid: str = "",
                   recording_url: str = "", ivr_flagged: bool = False,
+                  heal_missed_attempt: bool = False,
                   when_utc: datetime | None = None) -> dict | None:
     """Write a resolved call outcome + quarter status back to the company's row
     (spec section 7). Returns the written fields, or None if no matching row."""
@@ -80,6 +83,37 @@ def apply_outcome(queue, phone: str, outcome: str, *, call_sid: str = "",
             fields["recording_url"] = recording_url
         if ivr_flagged:
             fields["ivr_fallback_flagged"] = "yes"
+
+        # Self-heal a record_attempt() that never wrote through. Real incident
+        # 2026-09-24: Restoration Done was dialed twice 8 minutes apart -- its
+        # first call's record_attempt exhausted all 4 retries and gave up
+        # (exactly the residual risk that retry's own error log names), leaving
+        # last_call_date unset even though the call itself connected and
+        # resolved normally moments later. record_attempt() only runs at DIAL
+        # time and has no reconciliation if it fails; apply_outcome() runs
+        # reliably at RESOLUTION time for every call that connects, so it's
+        # the natural place to catch and fill the gap before the next tick can
+        # see this row as still-eligible and redial a real business. Gated on
+        # heal_missed_attempt (only true for a real scheduler-placed dial,
+        # never a manual/test call) so a one-off test against a real Queue
+        # number can't accidentally bump its attempts/cadence fields.
+        if heal_missed_attempt:
+            tz = parse_tz(row.timezone)
+            local_now = when_utc.astimezone(tz) if tz else when_utc
+            local_today = local_now.date().isoformat()
+            if row.last_call_date != local_today:
+                log.warning(
+                    "apply_outcome healing a missed record_attempt for %s: "
+                    "last_call_date was %r, not today (%s) -- the dial-time "
+                    "write must have failed",
+                    phone, row.last_call_date, local_today,
+                )
+                fields["current_quarter_attempts"] = row.attempts + 1
+                fields["last_call_date"] = local_today
+                fields["last_call_window"] = next_window_for(row)
+                fields["next_eligible_date"] = (
+                    local_now.date() + timedelta(days=CFG.sched_min_days_between_attempts)
+                ).isoformat()
 
         if outcome in MISS_OUTCOMES:
             # A single miss is always decisive, regardless of any prior answers

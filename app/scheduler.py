@@ -38,6 +38,7 @@ from .queue_model import (
     STATUS_IN_PROGRESS,
     QueueRow,
     append_csv,
+    next_window_for,
 )
 from .timezones import parse_tz
 
@@ -147,12 +148,6 @@ def active_window(local_dt: datetime) -> Window | None:
         # deep-night belongs to the preceding evening's calling day
         return dn
     return None
-
-
-def next_window_for(row: QueueRow) -> str:
-    if not row.last_call_window:
-        return CFG.sched_first_window
-    return "deep_night" if row.last_call_window == "evening" else "evening"
 
 
 # --------------------------------------------------------------------------- #
