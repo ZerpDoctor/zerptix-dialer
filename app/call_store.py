@@ -71,7 +71,31 @@ class CallStore:
                               company_name=company_name, company_timezone=company_timezone,
                               is_scheduled_attempt=is_scheduled_attempt)
             self._by_sid[call_sid] = rec
+            self._evict_old_resolved_locked()
             return rec
+
+    def _evict_old_resolved_locked(self, max_age_seconds: float = 3600) -> None:
+        """Drop long-resolved records so a long-running process's memory
+        doesn't grow for the rest of its uptime (every call ever handled
+        otherwise stays in _by_sid forever -- a real, if slow, leak). Only
+        phase=='resolved' records are eligible regardless of age, and the
+        1-hour margin is well past how long a real call plus its terminal
+        status callback ever takes (the master timer alone caps a call at
+        60s) -- generous safety room for SignalWire's own late 'completed'
+        callback (see /webhooks/status's backfill_call_status) before this
+        ever removes a record that still needs it. Any later webhook for an
+        evicted call_sid is already handled safely: every caller treats an
+        unknown call_sid as a normal case (stub-create in mark_logged, the
+        Sheet-based duplicate check in _resolve's `recovered` path) -- the
+        same handling already proven correct for a real process restart.
+        Called opportunistically from register() (once per new call) rather
+        than on a timer/background thread -- no extra machinery, and it
+        naturally scales with real call volume. Caller must hold self._lock."""
+        cutoff = time.time() - max_age_seconds
+        stale = [sid for sid, r in self._by_sid.items()
+                 if r.phase == "resolved" and r.placed_at < cutoff]
+        for sid in stale:
+            del self._by_sid[sid]
 
     def get(self, call_sid: str) -> CallRecord | None:
         with self._lock:
