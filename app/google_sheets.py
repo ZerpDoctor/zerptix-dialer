@@ -8,6 +8,7 @@ granted consent -- that user must be an editor of the target Sheet.
 from __future__ import annotations
 
 import logging
+import threading
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -16,6 +17,22 @@ from .config import CFG
 from .queue_model import col_letter
 
 log = logging.getLogger(__name__)
+
+# Real incident 2026-09-25/26: found alongside the identical bug in
+# anthropic_client.py (see that file's docstring) -- _service() used to
+# construct a fresh Credentials(token=None, ...) plus a fresh googleapiclient
+# service (its own unclosed HTTP transport) on every single Sheets call, of
+# which there are 6 call sites hit on essentially every resolved call. Worse
+# than the Anthropic case: token=None also forced a real OAuth token-refresh
+# network round-trip every time, discarding a still-valid cached access
+# token. google.oauth2.credentials.Credentials is designed to be reused --
+# it self-refreshes only when actually expired. httplib2 (the transport
+# googleapiclient builds on) is documented NOT thread-safe for concurrent
+# use, so this is cached per-thread (not as one shared module-level
+# singleton like the Anthropic client) -- each gthread worker thread builds
+# its own service once and reuses it for every request that lands on that
+# thread, so there's no cross-thread sharing of the same connection.
+_thread_local = threading.local()
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 TOKEN_URI = "https://oauth2.googleapis.com/token"
@@ -75,7 +92,11 @@ def _credentials() -> Credentials:
 
 
 def _service():
-    return build("sheets", "v4", credentials=_credentials(), cache_discovery=False)
+    svc = getattr(_thread_local, "service", None)
+    if svc is None:
+        svc = build("sheets", "v4", credentials=_credentials(), cache_discovery=False)
+        _thread_local.service = svc
+    return svc
 
 
 def ensure_tab_and_header() -> None:
