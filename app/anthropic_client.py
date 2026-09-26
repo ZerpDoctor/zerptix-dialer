@@ -13,10 +13,40 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 
 from .config import CFG
 
 log = logging.getLogger(__name__)
+
+# Real incident 2026-09-25/26: _call_haiku used to construct a brand-new
+# anthropic.Anthropic(...) -- and with it, a brand-new httpx.Client and its
+# own connection pool -- on every single classification call, never closed.
+# This function fires multiple times per call (menu look, digit choice,
+# gatekeeping, alt-contact, tail read), across many concurrent calls, so
+# these piled up faster than garbage collection reclaimed them -- traced via
+# Railway's own gunicorn arbiter log ("Worker was sent SIGKILL! Perhaps out
+# of memory?") recurring even at a concurrent-call count already confirmed
+# safe, meaning the real driver was classification-request volume, not call
+# count. A single shared client, built once and reused, is what the SDK
+# (and the httpx.Client it wraps) is actually designed for -- both are
+# documented safe for concurrent use across threads. Lazy singleton instead
+# of a module-level eager instantiation so the existing "raise
+# AnthropicUnavailable if the key isn't set" behavior below is unaffected.
+_client: "anthropic.Anthropic | None" = None  # noqa: F821 - imported lazily below
+_client_lock = threading.Lock()
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        with _client_lock:
+            if _client is None:
+                import anthropic
+                _client = anthropic.Anthropic(
+                    api_key=CFG.anthropic_api_key, max_retries=1, timeout=12.0,
+                )
+    return _client
 
 _SYSTEM = (
     "You classify a single automated phone (IVR) menu transcript for a dialer. "
@@ -213,11 +243,9 @@ def _call_haiku(system: str, transcript: str, *, extra_context: str = "") -> dic
         raise AnthropicUnavailable("ANTHROPIC_API_KEY is not set")
 
     try:
-        import anthropic
+        client = _get_client()
     except ImportError as e:
         raise AnthropicUnavailable("anthropic package not installed") from e
-
-    client = anthropic.Anthropic(api_key=CFG.anthropic_api_key, max_retries=1, timeout=12.0)
 
     prefix = f"{extra_context}\n\n" if extra_context else ""
     try:
