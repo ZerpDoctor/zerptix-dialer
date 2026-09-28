@@ -61,7 +61,13 @@ _SYSTEM = (
     "(e.g. 'press 1 for emergency service') -- false if you chose a different, "
     "non-emergency option, even if the word 'emergency' appears somewhere else in "
     "the transcript for a DIFFERENT digit than the one you chose, and false "
-    "whenever digit is null. "
+    "whenever digit is null. Also false if the option text is merely stating the "
+    "business's own name rather than describing an urgency/after-hours SERVICE "
+    "TIER as a real choice among alternatives -- many callers here are disaster/"
+    "restoration companies whose own name contains words like 'fire', 'flood', "
+    "'disaster', or 'emergency' (e.g. 'press 1 for Flood and Fire Response' is "
+    "just the company's name, NOT an emergency option; 'press 1 for emergency "
+    "service' or 'press 1 if this is an emergency' IS). "
     "Reply with ONLY a JSON object, no prose, with keys: "
     'is_menu (bool), digit (string like "1", "0", "*", "#", or null), '
     'confidence ("high" or "low"), clear_choice (bool: true only if one option '
