@@ -62,12 +62,29 @@ class StreamBuffer:
     segments: list[str] = field(default_factory=list)
     read_count: int = 0
     error: str | None = None  # set if the Deepgram connection itself failed
+    interim: str = ""  # latest not-yet-final Deepgram text for the utterance
+    # currently in progress, if any -- cleared once that utterance finalizes
+    # (see append()). Real incident 2026-09-28 (Paul Davis Restoration): a
+    # real greeting ("Thank you for calling the Paul Davis Rest...") was
+    # already being recognized here when the empty-turn/AMD='human' fast
+    # path hung up on a finalized-but-still-empty transcript, discarding
+    # words Deepgram had already heard but hadn't finalized yet. See
+    # has_interim()'s call site in ivr_turn.
 
     def append(self, text: str) -> None:
         if not text.strip():
             return
         with self.lock:
             self.segments.append(text.strip())
+            self.interim = ""
+
+    def set_interim(self, text: str) -> None:
+        with self.lock:
+            self.interim = text
+
+    def has_interim(self) -> bool:
+        with self.lock:
+            return bool(self.interim.strip())
 
     def text_since_last_read(self) -> str:
         """The per-turn read: 'what's new since the turn handler last
@@ -139,12 +156,12 @@ def _deepgram_reader(dg_ws, buf: StreamBuffer, call_sid: str, stop_event: thread
             buf.append(text)
             log.info("Deepgram final segment call_sid=%s: %r", call_sid, text)
         else:
-            # Diagnostic only (2026-09-28) -- never appended to buf, so this
-            # cannot change any downstream decision. See _DEEPGRAM_WS_URL's
-            # comment for why: distinguishes "Deepgram never recognized any
-            # words" from "it recognized words but never finalized them
-            # before the call ended" for calls that otherwise log as
-            # complete silence.
+            # Never appended to buf/text_since_last_read() -- classification
+            # and menu decisions still only ever act on finalized text.
+            # buf.set_interim() only feeds has_interim(), which ivr_turn uses
+            # to avoid hanging up mid-recognition (see StreamBuffer's
+            # docstring for the real incident this closes).
+            buf.set_interim(text)
             log.info("Deepgram interim (not final) call_sid=%s: %r", call_sid, text)
 
 

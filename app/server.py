@@ -722,6 +722,19 @@ def ivr_turn(stage: str, level: int) -> Response:
     # moment instead of a preemptive one.
 
     empty = speech == ""
+    if empty and CFG.stream_transcription_enabled and media_stream.get_buffer(call_sid).has_interim():
+        # Deepgram is still mid-recognizing a real utterance -- not silence,
+        # just not finalized yet. Treat this turn as "keep listening"
+        # instead of letting the empty-turn fast path below conclude and
+        # hang up on a technically-empty-but-actually-in-progress transcript.
+        # Real incident 2026-09-28: Paul Davis Restoration's actual greeting
+        # ("Thank you for calling the Paul Davis Rest...") was cut off
+        # mid-word by exactly this race -- AMD said 'human', the finalized
+        # transcript was empty, and _conclude_not_menu's fast path hung up
+        # right as Deepgram was still transcribing real words it had already
+        # heard. Still bounded by the gather-cycle cap and master timer
+        # below either way -- this can't wait forever.
+        empty = False
 
     if stage == "tail":
         return _ivr_tail(call_sid, rec)
