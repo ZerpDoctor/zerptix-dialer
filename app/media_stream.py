@@ -30,14 +30,22 @@ from .config import CFG
 log = logging.getLogger("dialer.media_stream")
 
 # mulaw/8000 matches SignalWire Media Streams' default codec (PCMU @ 8000Hz,
-# mono) -- see the Stream verb's own docs. interim_results=false: we only
-# want stabilized final segments, the same shape Gather's SpeechResult
-# already delivers per turn, so nothing downstream needs to handle partial/
-# updating text.
+# mono) -- see the Stream verb's own docs.
+# interim_results=true (2026-09-28, was false): only the *behavior* still
+# relies on stabilized final segments -- see _deepgram_reader, which still
+# only appends is_final=true text to the buffer nothing downstream changes.
+# Turned on purely for diagnostic logging: real incident (Bay Coast
+# Restoration, 2026-09-28) showed a "human" AMD verdict, 9s of real audio
+# genuinely forwarded to Deepgram (confirmed via frame count), and zero
+# final segments -- with interim_results off there was no way to tell
+# whether Deepgram ever recognized any words that just never finalized
+# before the call ended, versus genuine silence the whole time. Same
+# audio duration billed either way -- Deepgram's real-time pricing is per
+# minute of audio streamed, not per result message returned.
 _DEEPGRAM_WS_URL = (
     "wss://api.deepgram.com/v1/listen"
     "?model=nova-3&language=en-US&encoding=mulaw&sample_rate=8000"
-    "&channels=1&punctuate=true&interim_results=false"
+    "&channels=1&punctuate=true&interim_results=true"
 )
 
 
@@ -125,9 +133,19 @@ def _deepgram_reader(dg_ws, buf: StreamBuffer, call_sid: str, stop_event: thread
         if not alternatives:
             continue
         text = alternatives[0].get("transcript", "")
-        if text and data.get("is_final"):
+        if not text:
+            continue
+        if data.get("is_final"):
             buf.append(text)
             log.info("Deepgram final segment call_sid=%s: %r", call_sid, text)
+        else:
+            # Diagnostic only (2026-09-28) -- never appended to buf, so this
+            # cannot change any downstream decision. See _DEEPGRAM_WS_URL's
+            # comment for why: distinguishes "Deepgram never recognized any
+            # words" from "it recognized words but never finalized them
+            # before the call ended" for calls that otherwise log as
+            # complete silence.
+            log.info("Deepgram interim (not final) call_sid=%s: %r", call_sid, text)
 
 
 def handle_signalwire_stream(ws, call_sid: str) -> None:
