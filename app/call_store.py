@@ -39,6 +39,10 @@ class CallRecord:
     gather_count: int = 0
     transcript_accum: str = ""
     transcript_at_last_digit: int = 0   # index into transcript_accum where the tail begins
+    segment_len_at_last_check: int = 0  # len(segment) as of the last menu-stage
+    # evaluation -- lets ivr_turn detect "still growing" (far end still
+    # talking) vs. "stable" (a real pause) across short poll cycles. Reset to
+    # 0 alongside transcript_at_last_digit since it tracks the same window.
     ivr_detected: bool = False
     menu_levels: int = 0                # how many menus we navigated (digits sent)
     digits_sent: list[str] = field(default_factory=list)
@@ -200,6 +204,7 @@ class CallStore:
             rec.ivr_fallback_flagged = rec.ivr_fallback_flagged or flagged
             rec.ivr_reasoning = reasoning
             rec.transcript_at_last_digit = len(rec.transcript_accum)
+            rec.segment_len_at_last_check = 0
             rec.emergency_route = rec.emergency_route or is_emergency_route
             return rec
 
@@ -211,6 +216,7 @@ class CallStore:
             rec.classifier = classifier
             rec.ivr_reasoning = reasoning
             rec.transcript_at_last_digit = len(rec.transcript_accum)
+            rec.segment_len_at_last_check = 0
             return rec
 
     def mark_gatekeeping(self, call_sid: str, classifier: str, reasoning: str) -> CallRecord:

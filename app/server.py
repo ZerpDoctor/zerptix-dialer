@@ -712,38 +712,61 @@ def ivr_turn(stage: str, level: int) -> Response:
     # stage == "menu" -- only consider speech heard since the last digit press,
     # so an earlier menu's text doesn't re-trigger navigation at the next level.
     segment = rec.transcript_accum[rec.transcript_at_last_digit:]
-    menu_look = ivr.looks_like_menu(segment)
 
-    # 3. Digital-gatekeeping check -- only ever consulted when the menu keyword
-    # gate already said this is NOT a menu, so a real digit-press option always
-    # takes priority (handled by the menu branch below) before this even runs.
+    # Wait for one full poll cycle with no new content before evaluating this
+    # segment for a menu/gatekeeping/alt-contact decision. Real incident
+    # 2026-09-28 (live test against PuroClean's real IVR, right after
+    # shortening ivr_tail_gather_seconds to react faster): deciding on a
+    # still-playing announcement's early fragment (correctly pressing 1 for
+    # emergency), then reacting again next cycle to the SAME recording's
+    # later sentences -- many real IVR systems keep playing their full script
+    # to completion regardless of DTMF input, no barge-in -- read that
+    # residual leftover audio as a genuine second-level menu and pressed a
+    # second, wrong digit (3, "franchise owner") that was never actually
+    # offered in response to anything we did. Only costs one extra
+    # ivr_tail_gather_seconds (~4s) in the common case, not the old fixed
+    # wait this was built to remove. Doesn't touch the confident-answered
+    # fast-paths below -- those react to whatever's heard each turn by
+    # design and don't commit to a digit, so they aren't vulnerable to this.
+    grew = len(segment) > rec.segment_len_at_last_check
+    STORE.update(call_sid, segment_len_at_last_check=len(segment))
+
+    menu_look = None
     gatekeeping = None
-    if CFG.gatekeeping_detection_enabled and not menu_look.is_menu:
-        gk_look = ivr.looks_like_gatekeeping(segment)
-        if gk_look.is_gatekeeping:
-            gatekeeping = ivr.decide_gatekeeping(segment)
-            log.info(
-                "Gatekeeping check call_sid=%s is_gatekeeping=%s has_digit=%s (%s)",
-                call_sid, gatekeeping.is_gatekeeping, gatekeeping.has_digit_option,
-                gatekeeping.reasoning,
-            )
-
-    # 4. Alternative-contact-method check (text/email/website redirect) -- same
-    # not-a-menu-yet gate as gatekeeping, so a real digit-press option (even
-    # one that also mentions a phone number or website) always takes priority.
     alt_contact = None
-    if CFG.gatekeeping_detection_enabled and not menu_look.is_menu:
-        ac_look = ivr.looks_like_alt_contact(segment)
-        if ac_look.is_alt_contact:
-            alt_contact = ivr.decide_alt_contact(segment)
-            log.info(
-                "Alt-contact check call_sid=%s is_alt_contact=%s has_digit=%s (%s)",
-                call_sid, alt_contact.is_alt_contact, alt_contact.has_digit_option,
-                alt_contact.reasoning,
-            )
+    if not grew:
+        menu_look = ivr.looks_like_menu(segment)
 
-    if menu_look.is_menu or (gatekeeping and gatekeeping.has_digit_option) \
-            or (alt_contact and alt_contact.has_digit_option):
+        # 3. Digital-gatekeeping check -- only ever consulted when the menu
+        # keyword gate already said this is NOT a menu, so a real digit-press
+        # option always takes priority (handled by the menu branch below)
+        # before this even runs.
+        if CFG.gatekeeping_detection_enabled and not menu_look.is_menu:
+            gk_look = ivr.looks_like_gatekeeping(segment)
+            if gk_look.is_gatekeeping:
+                gatekeeping = ivr.decide_gatekeeping(segment)
+                log.info(
+                    "Gatekeeping check call_sid=%s is_gatekeeping=%s has_digit=%s (%s)",
+                    call_sid, gatekeeping.is_gatekeeping, gatekeeping.has_digit_option,
+                    gatekeeping.reasoning,
+                )
+
+        # 4. Alternative-contact-method check (text/email/website redirect) --
+        # same not-a-menu-yet gate as gatekeeping, so a real digit-press
+        # option (even one that also mentions a phone number or website)
+        # always takes priority.
+        if CFG.gatekeeping_detection_enabled and not menu_look.is_menu:
+            ac_look = ivr.looks_like_alt_contact(segment)
+            if ac_look.is_alt_contact:
+                alt_contact = ivr.decide_alt_contact(segment)
+                log.info(
+                    "Alt-contact check call_sid=%s is_alt_contact=%s has_digit=%s (%s)",
+                    call_sid, alt_contact.is_alt_contact, alt_contact.has_digit_option,
+                    alt_contact.reasoning,
+                )
+
+    if menu_look and (menu_look.is_menu or (gatekeeping and gatekeeping.has_digit_option)
+            or (alt_contact and alt_contact.has_digit_option)):
         decision = ivr.decide_digit(segment)
 
         if decision.is_menu:
