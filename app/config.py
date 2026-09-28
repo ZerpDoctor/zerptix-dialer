@@ -118,10 +118,29 @@ class Config:
     # IVR navigation
     ivr_enabled: bool = True
     ivr_master_timeout_seconds: int = 60
-    ivr_max_gather_cycles: int = 5
+    # Kept at 15 so ivr_max_gather_cycles * ivr_tail_gather_seconds (15*4=60s)
+    # stays >= ivr_master_timeout_seconds -- the master timer should always be
+    # the binding cap, not this cycle-count guard.
+    ivr_max_gather_cycles: int = 15
     ivr_speech_model: str = "phone_call"
     ivr_initial_timeout_seconds: int = 5
-    ivr_tail_gather_seconds: int = 5
+    # Lowered 5->4 (was deployed at 20 on Railway) 2026-09-28: real incidents
+    # (Florida's Elite Restoration, Response Flood & Fire) showed the digit
+    # press after a menu decision landing too late -- since
+    # STREAM_TRANSCRIPTION_ENABLED dropped speechTimeout="auto" from this
+    # Gather, there's no more acoustic end-of-speech detection, so every
+    # call site using this value (the post-press re-gather, the same-level
+    # keep-listening loop, _conclude_not_menu's and _ivr_tail's re-gather)
+    # only ever reacts after the FULL fixed window elapses, not when the far
+    # end's prompt actually finishes. Both incidents showed the exact same
+    # menu prompt repeating verbatim (Response Flood & Fire even captured an
+    # explicit "That input was not valid") -- the far end's own listening
+    # window for touch-tone input had already closed by the time our press
+    # landed. Shortening this to check far more often doesn't truncate slow
+    # speakers/long disclosures -- ivr_max_gather_cycles was raised to
+    # compensate, and ivr_master_timeout_seconds independently caps total
+    # call length regardless either way.
+    ivr_tail_gather_seconds: int = 4
     ivr_confirm_gather_seconds: int = 7  # short window used only when turn 1
     # already sounds like a confident live pickup, waiting on turn 2 to
     # confirm -- deliberately much shorter than ivr_tail_gather_seconds so a
@@ -250,10 +269,10 @@ def load() -> Config:
         port=int(_get("PORT", "8080") or "8080"),
         ivr_enabled=_bool("IVR_ENABLED", True),
         ivr_master_timeout_seconds=int(_get("IVR_MASTER_TIMEOUT_SECONDS", "60") or "60"),
-        ivr_max_gather_cycles=int(_get("IVR_MAX_GATHER_CYCLES", "5") or "5"),
+        ivr_max_gather_cycles=int(_get("IVR_MAX_GATHER_CYCLES", "15") or "15"),
         ivr_speech_model=_get("IVR_SPEECH_MODEL", "phone_call"),
         ivr_initial_timeout_seconds=int(_get("IVR_INITIAL_TIMEOUT_SECONDS", "5") or "5"),
-        ivr_tail_gather_seconds=int(_get("IVR_TAIL_GATHER_SECONDS", "5") or "5"),
+        ivr_tail_gather_seconds=int(_get("IVR_TAIL_GATHER_SECONDS", "4") or "4"),
         ivr_confirm_gather_seconds=int(_get("IVR_CONFIRM_GATHER_SECONDS", "7") or "7"),
         gatekeeping_detection_enabled=_bool("GATEKEEPING_DETECTION_ENABLED", True),
         sched_queue_tab=_get("SCHED_QUEUE_TAB", "Queue"),
