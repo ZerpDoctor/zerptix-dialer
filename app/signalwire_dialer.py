@@ -89,12 +89,20 @@ def _post(path: str, params: list[tuple[str, str]]) -> dict:
         raise DialError(f"SignalWire call placement failed (network error): {e}") from e
 
 
-def place_call(to_number: str, *, from_number: str | None = None) -> str:
+def place_call(to_number: str, *, from_number: str | None = None,
+                record: bool | None = None) -> str:
     """Place one outbound call with async AMD enabled. Returns the CallSid.
 
     `from_number` lets a caller (the scheduler's number-pool distribution)
     choose which of several SignalWire numbers places this call; defaults to
     CFG.signalwire_from_number for manual/single-number use.
+
+    `record` overrides CFG.record_calls for just this one call when explicitly
+    passed (True or False) -- None (the default, and the only value any
+    scheduler-placed call ever passes) means "use the global CFG.record_calls
+    setting" so this never changes a normal Queue call's behavior. Added
+    2026-09-28 so a manual /calls test can opt into recording (e.g. to verify
+    DTMF actually transmits) without flipping recording on for real calls.
 
     Raises DialError with a clear message on any failure so the caller can log
     it as a distinct status rather than a real outcome (spec section 11).
@@ -105,6 +113,7 @@ def place_call(to_number: str, *, from_number: str | None = None) -> str:
     if not from_num:
         raise DialError("No SignalWire from-number configured "
                         "(SIGNALWIRE_FROM_NUMBER / SIGNALWIRE_FROM_NUMBERS empty).")
+    should_record = CFG.record_calls if record is None else record
 
     params: list[tuple[str, str]] = [
         ("To", to_number),
@@ -117,11 +126,11 @@ def place_call(to_number: str, *, from_number: str | None = None) -> str:
         ("AsyncAmd", "true"),
         ("AsyncAmdStatusCallback", CFG.callback_url("webhooks/amd")),
         ("AsyncAmdStatusCallbackMethod", "POST"),
-        ("Record", "true" if CFG.record_calls else "false"),
+        ("Record", "true" if should_record else "false"),
     ]
     for event in ("initiated", "ringing", "answered", "completed"):
         params.append(("StatusCallbackEvent", event))
-    if CFG.record_calls:
+    if should_record:
         params.append(("RecordingStatusCallback", CFG.callback_url("webhooks/recording")))
         params.append(("RecordingStatusCallbackMethod", "POST"))
         if CFG.transcribe_calls:

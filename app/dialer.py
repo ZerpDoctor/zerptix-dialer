@@ -12,9 +12,13 @@ class DialError(RuntimeError):
     """A call could not be placed. Carries a human-readable reason."""
 
 
-def place_call(to_number: str, *, from_number: str | None = None) -> str:
+def place_call(to_number: str, *, from_number: str | None = None,
+                record: bool | None = None) -> str:
     """`from_number` (SignalWire number-pool distribution) is only meaningful
-    on the SignalWire path; the Twilio path has no pool concept and ignores it."""
+    on the SignalWire path; the Twilio path has no pool concept and ignores it.
+    `record` (SignalWire-only) overrides CFG.record_calls for just this call
+    when explicitly passed -- None means "use the global setting", the only
+    value a scheduler-placed call ever passes."""
     if CFG.telephony_provider == "twilio":
         from . import twilio_dialer
         try:
@@ -23,7 +27,7 @@ def place_call(to_number: str, *, from_number: str | None = None) -> str:
             raise DialError(str(e)) from e
     from . import signalwire_dialer
     try:
-        return signalwire_dialer.place_call(to_number, from_number=from_number)
+        return signalwire_dialer.place_call(to_number, from_number=from_number, record=record)
     except signalwire_dialer.DialError as e:
         raise DialError(str(e)) from e
 

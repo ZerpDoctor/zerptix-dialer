@@ -534,6 +534,13 @@ def place_call_endpoint():
     data = request.get_json(silent=True) or request.form
     to_number = (data.get("to_number") or "").strip()
     record_attempt = str(data.get("record_attempt", "")).lower() in ("1", "true", "yes")
+    # Opt-in per-call recording override for a manual test call only (e.g. to
+    # verify DTMF actually transmits) -- distinct from record_attempt above
+    # (whether to write a Queue attempt). None/unset never changes behavior
+    # for a real scheduler call, which never sends this field at all.
+    record_call = None
+    if "record_call" in data:
+        record_call = str(data.get("record_call")).lower() in ("1", "true", "yes")
     window = (data.get("window") or "").strip()
     local_date_iso = (data.get("local_date") or "").strip()
     # Which pool number to place this call from -- set by the scheduler's
@@ -551,7 +558,7 @@ def place_call_endpoint():
         if STORE.has_inflight_to(to_number):
             return {"error": f"a call to {to_number} is already in flight"}, 409
         try:
-            call_sid = place_call(to_number, from_number=from_number)
+            call_sid = place_call(to_number, from_number=from_number, record=record_call)
         except DialError as e:
             log.error("Call placement failed for %s: %s", to_number, e)
             return {"error": str(e)}, 502
