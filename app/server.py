@@ -298,6 +298,22 @@ def _compute_outcome(rec) -> tuple[str, str]:
             return "unknown", "call completed; AMD gave no usable result"
         return "unknown", ""
 
+    if not rec.ivr_detected and ivr.looks_like_menu(transcript).is_menu:
+        # Real incident 2026-09-28 (Paul Davis Restoration, right after the
+        # interim-recognition fix above): the far end hung up right after
+        # playing its full menu, before any /ivr/turn ever got a stable,
+        # complete segment to run decide_digit on -- transcript_accum ended
+        # up with the whole menu ("...press one to submit a new claim...")
+        # but rec.ivr_detected stayed False since navigation never actually
+        # ran. Falling through to decide_tail() below would just guess
+        # answered/voicemail/unknown from surrounding framing language, the
+        # same mistake mentions_incoming_menu already guards against
+        # elsewhere -- a real menu that was captured but never navigated is
+        # honestly ivr_unresolved, not a tail guess. Same looks_like_menu()
+        # used during live navigation, just applied at the one point it
+        # wasn't being run before.
+        return "ivr_unresolved", "menu detected in final transcript but call ended before navigation could run; check recording"
+
     decision = ivr.decide_tail(transcript, answered_by, rec.company_name)
     note = f"tail: {decision.reasoning}" if decision.reasoning else ""
     # classifier == "amd_fallback" gets the same honest-unknown treatment as
