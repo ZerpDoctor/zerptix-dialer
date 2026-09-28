@@ -829,6 +829,33 @@ def ivr_turn(stage: str, level: int) -> Response:
     grew = len(segment) > rec.segment_len_at_last_check
     STORE.update(call_sid, segment_len_at_last_check=len(segment))
 
+    if grew and level == 0:
+        # Cap consecutive deferrals, but ONLY at level 0 (before any digit
+        # has been pressed yet on this call). Real incident 2026-09-28 (911
+        # Restoration): a menu that LOOPS its own announcement (repeats when
+        # nothing registers, with only a brief gap between loops) never gave
+        # this gate a real pause to evaluate on -- it deferred for all 8
+        # turns/66s of the call, so decide_digit() never ran even once,
+        # despite a clear "press one for..." option being heard four
+        # separate times. Forcing evaluation here doesn't risk a wrong/early
+        # press -- decide_digit()'s own confidence/grounding checks already
+        # correctly decline and fall through to "keep listening" if the
+        # segment genuinely isn't decidable yet, same as before this gate
+        # existed at all. Deliberately NOT applied for level >= 1 (after a
+        # real digit press): that's exactly where the PuroClean incident
+        # this gate was built for lives -- a no-barge-in system keeps
+        # playing its OWN remaining script after a press, and forcing early
+        # evaluation there would risk reading that leftover audio as a
+        # genuine next-level menu again, the original bug.
+        consecutive = rec.consecutive_growth_turns + 1
+        if consecutive >= 2:
+            grew = False
+            STORE.update(call_sid, consecutive_growth_turns=0)
+        else:
+            STORE.update(call_sid, consecutive_growth_turns=consecutive)
+    else:
+        STORE.update(call_sid, consecutive_growth_turns=0)
+
     menu_look = None
     gatekeeping = None
     alt_contact = None

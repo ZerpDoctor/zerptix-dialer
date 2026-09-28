@@ -43,6 +43,14 @@ class CallRecord:
     # evaluation -- lets ivr_turn detect "still growing" (far end still
     # talking) vs. "stable" (a real pause) across short poll cycles. Reset to
     # 0 alongside transcript_at_last_digit since it tracks the same window.
+    consecutive_growth_turns: int = 0   # how many turns in a row came back
+    # "still growing" -- real incident 2026-09-28 (911 Restoration): a menu
+    # that LOOPS (repeats its own announcement when nothing registers, with
+    # only a brief gap between loops) never gave the stability gate a real
+    # pause to evaluate on -- it deferred for all 8 turns/66s of the call,
+    # so decide_digit() never even ran once, despite hearing a clear "press
+    # one for..." option four separate times. Capped in ivr_turn so a
+    # looping menu can't defer forever; reset alongside the fields above.
     ivr_detected: bool = False
     menu_levels: int = 0                # how many menus we navigated (digits sent)
     digits_sent: list[str] = field(default_factory=list)
@@ -266,6 +274,7 @@ class CallStore:
             rec.ivr_reasoning = reasoning
             rec.transcript_at_last_digit = len(rec.transcript_accum)
             rec.segment_len_at_last_check = 0
+            rec.consecutive_growth_turns = 0
             rec.emergency_route = rec.emergency_route or is_emergency_route
             return rec
 
@@ -278,6 +287,7 @@ class CallStore:
             rec.ivr_reasoning = reasoning
             rec.transcript_at_last_digit = len(rec.transcript_accum)
             rec.segment_len_at_last_check = 0
+            rec.consecutive_growth_turns = 0
             return rec
 
     def mark_gatekeeping(self, call_sid: str, classifier: str, reasoning: str) -> CallRecord:
