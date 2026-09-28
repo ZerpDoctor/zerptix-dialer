@@ -882,7 +882,19 @@ def ivr_turn(stage: str, level: int) -> Response:
     # real menu or reveal itself as voicemail later.
     if rec.gather_count >= 2:
         early = ivr.decide_tail(segment, rec.answered_by, rec.company_name)
-        if early.outcome == "answered":
+        # classifier != "amd_fallback" / mentions_incoming_menu guards added
+        # 2026-09-28, matching the same guards already applied at every other
+        # decide_tail() call site in this file -- this was the one place they
+        # were missing. Real incident: Paul Davis Restoration's corporate
+        # line was hung up on here mid-menu ("Press two if you are calling
+        # regarding existing..." still being read) because Haiku's own
+        # structured read said "not a live human, not voicemail, not hold"
+        # (this IS an IVR menu) but fell through to trusting AMD's bare
+        # 'human' tag as a confident "answered" -- the exact bare-AMD-guess
+        # pattern this codebase already stopped trusting at three other
+        # resolution sites, just never patched here.
+        if (early.outcome == "answered" and early.classifier != "amd_fallback"
+                and not ivr.mentions_incoming_menu(segment)):
             log.info("IVR early-resolve call_sid=%s: confident answered on turn %d (%s)",
                       call_sid, rec.gather_count, early.reasoning)
             _resolve(call_sid)
@@ -899,7 +911,12 @@ def ivr_turn(stage: str, level: int) -> Response:
     # avoid truncating a long disclosure -- confirm/deny much sooner instead.
     if rec.gather_count == 1:
         early = ivr.decide_tail(segment, rec.answered_by, rec.company_name)
-        if early.outcome == "answered":
+        # Same amd_fallback/mentions_incoming_menu guards as the gather_count
+        # >= 2 branch above -- lower stakes here (this only picks a shorter
+        # confirm-gather window, it never hangs up), but no reason to trust
+        # a bare AMD guess here either when it's not trusted anywhere else.
+        if (early.outcome == "answered" and early.classifier != "amd_fallback"
+                and not ivr.mentions_incoming_menu(segment)):
             return _twiml(_gather("menu", level, CFG.ivr_confirm_gather_seconds))
 
     # Keep listening through non-actionable speech (the menu instruction may be
