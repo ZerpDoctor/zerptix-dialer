@@ -486,6 +486,8 @@ def _cli() -> None:
         q = SheetQueue(args.tab or CFG.sched_queue_tab)
         log.info("scheduler loop: tick every %ds against tab %r, max %d concurrent calls",
                   CFG.sched_tick_seconds, q.tab, CFG.sched_max_concurrent_calls)
+        caps = {n: _cap_for(n) or "unlimited" for n in CFG.signalwire_from_numbers}
+        log.info("nightly caps loaded at boot: %s", caps)
         while True:
             try:
                 _print(tick(queue=q, dialer=pooled_http_dialer))
