@@ -148,6 +148,33 @@ def place_call(to_number: str, *, from_number: str | None = None,
     return sid
 
 
+def get_answered_by(call_sid: str) -> str:
+    """Best-effort direct REST read of SignalWire's own AnsweredBy for this
+    call -- never raises, "" on any failure or if blank there too.
+
+    Real incident 2026-09-28: 911 Restoration test call, AMD genuinely
+    computed 'machine_start' on SignalWire's side (confirmed via this exact
+    endpoint), but the AsyncAmdStatusCallback webhook never reached
+    /webhooks/amd at all -- no restart, no signature rejection logged,
+    it simply never arrived. A durable checkpoint can't recover a signal
+    that was never received by any process in the first place, so this is
+    a different, complementary mitigation: ask SignalWire directly for the
+    answer it already computed, instead of only ever waiting on it to push
+    that answer to us. Called from _compute_outcome as the final fallback,
+    after checking rec.answered_by and the checkpoint -- only on the
+    already-rare blank-answered_by path, not on every call. A plain
+    read-only GET against the Call resource; not audio-minute billed."""
+    try:
+        url = f"{_base_url()}/Calls/{call_sid}.json"
+        req = urllib.request.Request(url, headers={"Authorization": _auth_header()})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        return (data.get("answered_by") or "").strip()
+    except Exception as e:  # noqa: BLE001 - best effort only
+        log.warning("get_answered_by REST fallback failed for call_sid=%s: %s", call_sid, e)
+        return ""
+
+
 def hang_up(call_sid: str) -> None:
     """Best-effort immediate hangup once an outcome is known."""
     try:

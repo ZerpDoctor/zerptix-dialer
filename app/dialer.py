@@ -32,6 +32,18 @@ def place_call(to_number: str, *, from_number: str | None = None,
         raise DialError(str(e)) from e
 
 
+def get_answered_by(call_sid: str) -> str:
+    """Best-effort direct read of the provider's own AnsweredBy verdict for
+    call_sid, as a fallback when the AsyncAmd webhook never arrived at all --
+    see signalwire_dialer.get_answered_by's docstring for the real incident.
+    SignalWire-only for now (the active provider); Twilio path returns ""
+    rather than an untested equivalent, since Twilio isn't live traffic."""
+    if CFG.telephony_provider == "twilio":
+        return ""
+    from . import signalwire_dialer
+    return signalwire_dialer.get_answered_by(call_sid)
+
+
 def hang_up(call_sid: str) -> None:
     if CFG.telephony_provider == "twilio":
         from . import twilio_dialer

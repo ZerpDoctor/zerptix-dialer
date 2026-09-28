@@ -39,7 +39,7 @@ from . import ivr
 from . import media_stream
 from . import amd_checkpoint
 from . import call_checkpoint
-from .dialer import hang_up, place_call, DialError
+from .dialer import hang_up, place_call, get_answered_by, DialError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -237,13 +237,30 @@ def _compute_outcome(rec) -> tuple[str, str]:
     if by_status:
         return by_status, ""
 
-    # Recover a real AMD verdict this process's in-memory copy lost to a
-    # mid-call restart -- see app/amd_checkpoint.py for the real incident.
-    # Only hits the checkpoint tab when actually needed (rec.answered_by
-    # blank), not on every call. "" on no match/failure, same as before.
+    # Recover a real AMD verdict this process's in-memory copy is missing.
+    # Two different failure modes, two fallbacks, in order of how cheap/
+    # likely they are: (1) lost to a mid-call restart -- see
+    # app/amd_checkpoint.py -- recoverable from our own durable checkpoint;
+    # (2) the AsyncAmdStatusCallback webhook itself never arrived at all
+    # (real incident 2026-09-28, 911 Restoration test call: SignalWire had
+    # computed 'machine_start' on their side, confirmed via their own Call
+    # resource, but no webhook, no restart, no rejected-signature log line --
+    # it simply never showed up). A checkpoint can't recover a signal no
+    # process ever received, so the second fallback asks the provider
+    # directly instead of only ever waiting for it to be pushed to us.
+    # recovery_source feeds the row note below so it's accurate about which
+    # (if either) fallback actually fired -- both only run on this already-
+    # rare blank-answered_by path, never on a normal call.
     answered_by = (rec.answered_by or "").strip()
+    recovery_source = None
     if not answered_by:
         answered_by = amd_checkpoint.lookup(rec.call_sid)
+        if answered_by:
+            recovery_source = "checkpoint after a restart"
+    if not answered_by:
+        answered_by = get_answered_by(rec.call_sid)
+        if answered_by:
+            recovery_source = "a direct SignalWire lookup (webhook never arrived)"
 
     if rec.gatekeeping_detected:
         # reasoning goes into the row via rec.gatekeeping_reasoning in
@@ -322,8 +339,7 @@ def _compute_outcome(rec) -> tuple[str, str]:
         # them, exactly the "single unverified signal" this codebase stopped
         # trusting everywhere else.
         if answered_by:
-            recovered = not (rec.answered_by or "").strip()
-            tag = " (recovered from checkpoint after a restart)" if recovered else ""
+            tag = f" (recovered via {recovery_source})" if recovery_source else ""
             return "unknown", f"call completed with AMD={answered_by!r}{tag} but nothing was transcribed; check recording"
         if cs == "completed":
             return "unknown", "call completed; AMD gave no usable result"
