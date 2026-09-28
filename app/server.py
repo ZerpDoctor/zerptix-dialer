@@ -38,6 +38,7 @@ from . import google_sheets
 from . import ivr
 from . import media_stream
 from . import amd_checkpoint
+from . import call_checkpoint
 from .dialer import hang_up, place_call, DialError
 
 logging.basicConfig(
@@ -81,6 +82,36 @@ def _verify(req) -> bool:
     if not ok:
         log.warning("Rejected webhook with bad signature: %s", req.path)
     return ok
+
+
+def _maybe_rehydrate(call_sid: str) -> None:
+    """Called at the top of every webhook that touches a call_sid, before any
+    STORE lookup that would otherwise silently create a blank stub. If this
+    process has no memory of call_sid but it's genuinely still in flight
+    (not already resolved), reconstruct its full pre-restart state from
+    call_checkpoint.py instead of starting from nothing -- see that module's
+    docstring for the real incident (58% of 'unknown' rows) this closes.
+
+    Order matters: call_sid_already_logged() against the real Calls tab is
+    checked FIRST and is the only trusted source for "is this call already
+    resolved" -- a checkpoint's own data is never trusted for that, since an
+    already-resolved call's last checkpoint row could still be sitting there
+    unpruned. Only rehydrates when genuinely unknown to this process AND not
+    already logged; a no-op (and cheap: one in-memory dict lookup) for every
+    normal call that never experiences a restart."""
+    if STORE.get(call_sid) is not None:
+        return
+    try:
+        if google_sheets.call_sid_already_logged(call_sid):
+            return
+    except Exception as e:  # noqa: BLE001 - best effort only
+        log.warning("call_sid_already_logged check failed during rehydrate for %s: %s", call_sid, e)
+        return
+    data = call_checkpoint.load(call_sid)
+    if data:
+        STORE.rehydrate(call_sid, data)
+        log.info("Rehydrated call_sid=%s from checkpoint (gather=%s, ivr_detected=%s, digits=%s)",
+                  call_sid, data.get("gather_count"), data.get("ivr_detected"), data.get("digits_sent"))
 
 
 def _lookup_queue_row(phone: str):
@@ -699,18 +730,23 @@ def ivr_turn(stage: str, level: int) -> Response:
         return Response("invalid signature", status=403)
 
     call_sid = request.form.get("CallSid", "")
+    _maybe_rehydrate(call_sid)
     if CFG.stream_transcription_enabled:
         # Gather is DTMF-only in this mode (see _gather) -- SpeechResult is
         # never populated, the buffer media_stream.py fills from Deepgram is
         # the real source now. text_since_last_read() returns only what
         # arrived since the PREVIOUS turn, the same per-turn shape
-        # SpeechResult already had.
+        # SpeechResult already had. A fresh (rehydrated) process's own
+        # stream buffer only has NEW speech since ITS stream connected --
+        # rec.transcript_accum was just restored with everything before
+        # that, and add_turn() below appends onto it, so continuity holds.
         speech = media_stream.get_buffer(call_sid).text_since_last_read()
     else:
         speech = (request.form.get("SpeechResult") or "").strip()
     STORE.update(call_sid, to_number=request.form.get("To") or None)
     STORE.ensure_answered(call_sid)
     rec = STORE.add_turn(call_sid, speech)
+    call_checkpoint.save(rec)
     log.info(
         "IVR turn call_sid=%s stage=%s level=%s gather=%d speech=%r",
         call_sid, stage, level, rec.gather_count, speech[:200],
@@ -1011,6 +1047,7 @@ def webhook_amd() -> Response:
     if not _verify(request):
         return Response("invalid signature", status=403)
     call_sid = request.form.get("CallSid", "")
+    _maybe_rehydrate(call_sid)
     answered_by = (request.form.get("AnsweredBy") or "").strip()
     STORE.update(call_sid, answered_by=answered_by, to_number=request.form.get("To") or None)
     rec = STORE.get(call_sid)
@@ -1020,6 +1057,8 @@ def webhook_amd() -> Response:
     # app/amd_checkpoint.py's docstring for the real incident this closes.
     # A side-channel write, no live call audio waiting on it.
     amd_checkpoint.checkpoint(call_sid, answered_by)
+    if rec:
+        call_checkpoint.save(rec)
 
     if rec and rec.logged:
         # Real incident 2026-09-22: Tri County Cleaning Systems logged
@@ -1081,6 +1120,14 @@ def webhook_status() -> Response:
     if not _verify(request):
         return Response("invalid signature", status=403)
     call_sid = request.form.get("CallSid", "")
+    # Rehydrate BEFORE computing `recovered` below -- if a checkpoint exists
+    # for a genuinely in-flight (not already-logged) call, this restores the
+    # full pre-restart state, so `recovered` correctly becomes False (we're
+    # no longer working from a blank stub) and _resolve() proceeds with real
+    # context instead of the recovered-stub Sheet re-check path. If nothing
+    # to rehydrate (already logged, or never checkpointed), this is a no-op
+    # and behavior is unchanged from before.
+    _maybe_rehydrate(call_sid)
     call_status = (request.form.get("CallStatus") or "").strip()
     duration = request.form.get("CallDuration", "")
     # Captured BEFORE the upsert below creates a record: True only if this

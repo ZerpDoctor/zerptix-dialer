@@ -179,6 +179,14 @@ class Config:
     # process restart wipes the in-memory CallStore before resolution.
     amd_checkpoint_tab: str = "AMD_Checkpoint"
 
+    # Durable FULL-call-state checkpoint (see app/call_checkpoint.py) --
+    # supersedes amd_checkpoint_tab's narrow AnsweredBy-only recovery with
+    # full rehydration (transcript, digits pressed, navigation state) so a
+    # mid-call restart can resume a call, not just log it more informatively
+    # as unknown. amd_checkpoint_tab is kept as a harmless, redundant
+    # extra safety net, not removed.
+    call_checkpoint_tab: str = "Call_Checkpoint"
+
     # Telephony provider selection (spec: SignalWire migration) -----------------
     # Which provider actually places calls / owns the active webhook contract.
     # The Twilio path is left fully intact behind this switch in case Twilio
@@ -294,6 +302,7 @@ def load() -> Config:
         inbound_pool_numbers=_e164_list(_get("INBOUND_POOL_NUMBERS", "")),
         inbound_log_tab=_get("INBOUND_LOG_TAB", "Inbound"),
         amd_checkpoint_tab=_get("AMD_CHECKPOINT_TAB", "AMD_Checkpoint"),
+        call_checkpoint_tab=_get("CALL_CHECKPOINT_TAB", "Call_Checkpoint"),
         inbound_reject_reason=_get("INBOUND_REJECT_REASON", "rejected"),
         telephony_provider=_get("TELEPHONY_PROVIDER", "signalwire").strip().lower(),
         signalwire_space_url=_get("SIGNALWIRE_SPACE_URL"),

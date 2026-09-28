@@ -152,6 +152,67 @@ class CallStore:
         with self._lock:
             return sum(1 for r in self._by_sid.values() if not r.logged)
 
+    def rehydrate(self, call_sid: str, data: dict[str, str]) -> CallRecord:
+        """Reconstruct a CallRecord from a call_checkpoint.load() dict for a
+        call_sid this process has never seen (a restart-orphaned in-flight
+        call). Caller MUST already have confirmed via
+        google_sheets.call_sid_already_logged() that this call hasn't
+        already been resolved -- `logged` is never trusted from a
+        checkpoint, only from the real Calls tab, so it's deliberately not
+        one of the restored fields (always starts False here).
+
+        Deliberately overwrites any existing in-memory record (rehydration
+        is only ever called when STORE.get() already returned None) rather
+        than merging, since a checkpoint row is a complete snapshot, not a
+        partial update. Malformed/missing fields fall back to CallRecord's
+        own defaults rather than raising -- a corrupt checkpoint must not
+        break live call handling, just lose some of the recovery benefit."""
+        def _f(name: str, default: float) -> float:
+            try:
+                return float(data.get(name) or default)
+            except ValueError:
+                return default
+
+        def _i(name: str, default: int) -> int:
+            try:
+                return int(data.get(name) or default)
+            except ValueError:
+                return default
+
+        def _b(name: str) -> bool:
+            return (data.get(name) or "").strip().lower() == "true"
+
+        with self._lock:
+            rec = CallRecord(
+                call_sid=call_sid,
+                to_number=data.get("to_number", ""),
+                from_number=data.get("from_number", ""),
+                company_name=data.get("company_name", ""),
+                company_timezone=data.get("company_timezone", ""),
+                is_scheduled_attempt=_b("is_scheduled_attempt"),
+                answered_by=data.get("answered_by") or None,
+                phase=data.get("phase") or "listening",
+                answered_at=_f("answered_at", time.time()),
+                gather_count=_i("gather_count", 0),
+                transcript_accum=data.get("transcript_accum", ""),
+                transcript_at_last_digit=_i("transcript_at_last_digit", 0),
+                segment_len_at_last_check=_i("segment_len_at_last_check", 0),
+                ivr_detected=_b("ivr_detected"),
+                digits_sent=[d for d in (data.get("digits_sent") or "").split("|") if d],
+                ivr_fallback_flagged=_b("ivr_fallback_flagged"),
+                classifier=data.get("classifier") or "none",
+                ivr_reasoning=data.get("ivr_reasoning", ""),
+                hit_time_cap=_b("hit_time_cap"),
+                gatekeeping_detected=_b("gatekeeping_detected"),
+                gatekeeping_reasoning=data.get("gatekeeping_reasoning", ""),
+                alt_contact_detected=_b("alt_contact_detected"),
+                alt_contact_reasoning=data.get("alt_contact_reasoning", ""),
+                emergency_route=_b("emergency_route"),
+            )
+            rec.menu_levels = len(rec.digits_sent)
+            self._by_sid[call_sid] = rec
+            return rec
+
     def update(self, call_sid: str, *, to_number: str | None = None, **fields) -> CallRecord:
         """Upsert: create the record if this is the first we've heard of the SID.
 
