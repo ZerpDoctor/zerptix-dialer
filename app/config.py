@@ -174,6 +174,11 @@ class Config:
     inbound_log_tab: str = "Inbound"
     inbound_reject_reason: str = "rejected"  # "rejected" (SIT/fast-busy) or "busy"
 
+    # Durable AMD-verdict checkpoint (see app/amd_checkpoint.py) -- recovers a
+    # real AnsweredBy signal that would otherwise be lost if a mid-call web
+    # process restart wipes the in-memory CallStore before resolution.
+    amd_checkpoint_tab: str = "AMD_Checkpoint"
+
     # Telephony provider selection (spec: SignalWire migration) -----------------
     # Which provider actually places calls / owns the active webhook contract.
     # The Twilio path is left fully intact behind this switch in case Twilio
@@ -288,6 +293,7 @@ def load() -> Config:
         sched_max_concurrent_calls=int(_get("SCHED_MAX_CONCURRENT_CALLS", "5") or "5"),
         inbound_pool_numbers=_e164_list(_get("INBOUND_POOL_NUMBERS", "")),
         inbound_log_tab=_get("INBOUND_LOG_TAB", "Inbound"),
+        amd_checkpoint_tab=_get("AMD_CHECKPOINT_TAB", "AMD_Checkpoint"),
         inbound_reject_reason=_get("INBOUND_REJECT_REASON", "rejected"),
         telephony_provider=_get("TELEPHONY_PROVIDER", "signalwire").strip().lower(),
         signalwire_space_url=_get("SIGNALWIRE_SPACE_URL"),

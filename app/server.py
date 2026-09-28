@@ -37,6 +37,7 @@ from . import outcomes
 from . import google_sheets
 from . import ivr
 from . import media_stream
+from . import amd_checkpoint
 from .dialer import hang_up, place_call, DialError
 
 logging.basicConfig(
@@ -205,6 +206,14 @@ def _compute_outcome(rec) -> tuple[str, str]:
     if by_status:
         return by_status, ""
 
+    # Recover a real AMD verdict this process's in-memory copy lost to a
+    # mid-call restart -- see app/amd_checkpoint.py for the real incident.
+    # Only hits the checkpoint tab when actually needed (rec.answered_by
+    # blank), not on every call. "" on no match/failure, same as before.
+    answered_by = (rec.answered_by or "").strip()
+    if not answered_by:
+        answered_by = amd_checkpoint.lookup(rec.call_sid)
+
     if rec.gatekeeping_detected:
         # reasoning goes into the row via rec.gatekeeping_reasoning in
         # _build_row (same pattern as rec.ivr_reasoning), not duplicated here.
@@ -228,7 +237,7 @@ def _compute_outcome(rec) -> tuple[str, str]:
             else rec.transcript_accum
         ).strip()
         if cap_transcript:
-            decision = ivr.decide_tail(cap_transcript, rec.answered_by, rec.company_name)
+            decision = ivr.decide_tail(cap_transcript, answered_by, rec.company_name)
             # amd_fallback means neither a real keyword match NOR a confident
             # Haiku read found anything -- decide_tail is then trusting AMD's
             # fast-mode verdict alone, which this codebase already found
@@ -281,14 +290,15 @@ def _compute_outcome(rec) -> tuple[str, str]:
         # with zero transcript captured -- no way to actually verify any of
         # them, exactly the "single unverified signal" this codebase stopped
         # trusting everywhere else.
-        ab = (rec.answered_by or "").strip()
-        if ab:
-            return "unknown", f"call completed with AMD={ab!r} but nothing was transcribed; check recording"
+        if answered_by:
+            recovered = not (rec.answered_by or "").strip()
+            tag = " (recovered from checkpoint after a restart)" if recovered else ""
+            return "unknown", f"call completed with AMD={answered_by!r}{tag} but nothing was transcribed; check recording"
         if cs == "completed":
             return "unknown", "call completed; AMD gave no usable result"
         return "unknown", ""
 
-    decision = ivr.decide_tail(transcript, rec.answered_by, rec.company_name)
+    decision = ivr.decide_tail(transcript, answered_by, rec.company_name)
     note = f"tail: {decision.reasoning}" if decision.reasoning else ""
     # classifier == "amd_fallback" gets the same honest-unknown treatment as
     # a genuine "unknown" verdict, added 2026-09-22 alongside the same fix
@@ -960,6 +970,10 @@ def webhook_amd() -> Response:
     rec = STORE.get(call_sid)
     phase = rec.phase if rec else "dialing"
     log.info("AMD result call_sid=%s AnsweredBy=%s phase=%s", call_sid, answered_by, phase)
+    # Durable checkpoint, not just the in-memory CallStore -- see
+    # app/amd_checkpoint.py's docstring for the real incident this closes.
+    # A side-channel write, no live call audio waiting on it.
+    amd_checkpoint.checkpoint(call_sid, answered_by)
 
     if rec and rec.logged:
         # Real incident 2026-09-22: Tri County Cleaning Systems logged
