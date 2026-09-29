@@ -830,19 +830,45 @@ def ivr_turn(stage: str, level: int) -> Response:
     # moment instead of a preemptive one.
 
     empty = speech == ""
-    if empty and CFG.stream_transcription_enabled and media_stream.get_buffer(call_sid).has_interim():
-        # Deepgram is still mid-recognizing a real utterance -- not silence,
-        # just not finalized yet. Treat this turn as "keep listening"
-        # instead of letting the empty-turn fast path below conclude and
-        # hang up on a technically-empty-but-actually-in-progress transcript.
-        # Real incident 2026-09-28: Paul Davis Restoration's actual greeting
-        # ("Thank you for calling the Paul Davis Rest...") was cut off
-        # mid-word by exactly this race -- AMD said 'human', the finalized
-        # transcript was empty, and _conclude_not_menu's fast path hung up
-        # right as Deepgram was still transcribing real words it had already
-        # heard. Still bounded by the gather-cycle cap and master timer
-        # below either way -- this can't wait forever.
-        empty = False
+    if empty and CFG.stream_transcription_enabled:
+        buf = media_stream.get_buffer(call_sid)
+        if buf.has_interim():
+            # Deepgram is still mid-recognizing a real utterance -- not silence,
+            # just not finalized yet. Treat this turn as "keep listening"
+            # instead of letting the empty-turn fast path below conclude and
+            # hang up on a technically-empty-but-actually-in-progress transcript.
+            # Real incident 2026-09-28: Paul Davis Restoration's actual greeting
+            # ("Thank you for calling the Paul Davis Rest...") was cut off
+            # mid-word by exactly this race -- AMD said 'human', the finalized
+            # transcript was empty, and _conclude_not_menu's fast path hung up
+            # right as Deepgram was still transcribing real words it had already
+            # heard. Still bounded by the gather-cycle cap and master timer
+            # below either way -- this can't wait forever.
+            empty = False
+        elif rec.gather_count == 1 and buf.error is None and not buf.full_text().strip():
+            # has_interim() above can't catch this variant -- there's no
+            # interim to see because the pipeline hasn't produced ANYTHING
+            # yet, not even a partial. Real incident 2026-09-28: a full-night
+            # audit found 15/90 calls that same batch resolving "unknown,
+            # nothing transcribed" within ~11-14s; checkpoint traces (not
+            # just the Sheet's summary row) showed transcript_accum was
+            # LITERALLY EMPTY -- zero characters -- at this exact first turn,
+            # for calls at every point across an 11-minute, 5-way-concurrent
+            # dialing burst. Most likely explanation: the SignalWire ->
+            # media-stream-websocket -> Deepgram handshake chain hadn't
+            # finished by the 5s initial gather window under that load, not
+            # 15 different callers all staying silent. Gated strictly to
+            # gather_count==1 (only the very first turn of the whole call --
+            # this counter never resets per navigation level, so a real
+            # empty turn later in the call is never affected) and skipped
+            # entirely if the stream already reported a hard failure
+            # (buf.error set, e.g. DEEPGRAM_API_KEY missing or the WS
+            # connect itself failed) -- waiting longer can't help there, so
+            # that case resolves exactly as before. A genuinely silent human
+            # on turn 1 still resolves via the unchanged gather-cap/
+            # master-timer paths below, just one ivr_tail_gather_seconds
+            # cycle (~4s) later than before this fix.
+            empty = False
 
     if stage == "tail":
         return _ivr_tail(call_sid, rec)
