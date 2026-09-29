@@ -23,6 +23,7 @@ import base64
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 
 from .config import CFG
@@ -62,6 +63,16 @@ class StreamBuffer:
     segments: list[str] = field(default_factory=list)
     read_count: int = 0
     error: str | None = None  # set if the Deepgram connection itself failed
+    connected_at: float | None = None  # set the instant SignalWire's own WS
+    # reaches handle_signalwire_stream() -- BEFORE the Deepgram connect
+    # attempt, so it answers "did SignalWire even connect to us at all",
+    # distinct from "did Deepgram then work". Real incident 2026-09-28: 15/90
+    # calls in one batch resolved "unknown, nothing transcribed" with
+    # transcript_accum literally empty at turn 1; with only a log line as
+    # evidence, there was no way to tell "stream never connected" from
+    # "connected but Deepgram was still slow" after the fact. See its use in
+    # ivr_turn (server.py) to give the still-connecting case more patience
+    # than the connected-but-quiet case.
     interim: str = ""  # latest not-yet-final Deepgram text for the utterance
     # currently in progress, if any -- cleared once that utterance finalizes
     # (see append()). Real incident 2026-09-28 (Paul Davis Restoration): a
@@ -176,6 +187,7 @@ def handle_signalwire_stream(ws, call_sid: str) -> None:
     import simple_websocket
 
     buf = get_buffer(call_sid)
+    buf.connected_at = time.time()
 
     if not CFG.deepgram_api_key:
         buf.error = "DEEPGRAM_API_KEY not set"

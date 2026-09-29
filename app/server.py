@@ -845,6 +845,23 @@ def ivr_turn(stage: str, level: int) -> Response:
             # heard. Still bounded by the gather-cycle cap and master timer
             # below either way -- this can't wait forever.
             empty = False
+        elif buf.error is None and buf.connected_at is None:
+            # SignalWire's own WebSocket hasn't even reached us yet -- distinct
+            # from "connected but Deepgram is slow" below. A fresh WS/TLS
+            # handshake under concurrent dialing load can plausibly take
+            # longer than one extra cycle to complete, and waiting for it
+            # costs nothing (still bounded by the exact same gather-cycle cap
+            # and master timer every other path already relies on -- this
+            # can't wait forever either). Deliberately NOT capped to
+            # gather_count==1 like the branch below: as long as the stream
+            # still hasn't connected, there's no new information to act on by
+            # giving up sooner, and the outer bounds already stop it if it
+            # never connects at all for the whole call. Explicitly excludes
+            # buf.error (a real, already-known failure -- e.g. missing
+            # DEEPGRAM_API_KEY or the WS connect itself throwing) since
+            # waiting longer for a connection we already know failed can't
+            # help; that case still resolves exactly as before this fix.
+            empty = False
         elif rec.gather_count == 1 and buf.error is None and not buf.full_text().strip():
             # has_interim() above can't catch this variant -- there's no
             # interim to see because the pipeline hasn't produced ANYTHING
