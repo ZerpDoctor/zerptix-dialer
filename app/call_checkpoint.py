@@ -30,11 +30,45 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 
 from .config import CFG
 
 log = logging.getLogger("dialer.call_checkpoint")
+
+# Real incident 2026-09-28/29: writing on every single turn (this module's
+# whole design) hit Google's Sheets write quota (60 requests/min/user,
+# SHARED across this entire process AND the account -- not per-tab) during a
+# real evening batch, producing repeated 429 RATE_LIMIT_EXCEEDED errors
+# (confirmed via server logs, e.g. call_sid=426213e3-...). Each failure was
+# already harmless on its own (best-effort, never broke the live call), but
+# the real risk is worse: this is a LOWER-PRIORITY, best-effort write
+# competing for the exact same shared quota as the Calls-tab append, Queue
+# reads/writes, and AMD checkpoint -- none of which can afford to be
+# starved. A process-wide budget, well under the real limit, caps this
+# module's own usage so it degrades by skipping writes under load instead of
+# either erroring repeatedly or crowding out the writes that actually matter.
+_RATE_LIMIT_LOCK = threading.Lock()
+_write_timestamps: list[float] = []
+_MAX_WRITES_PER_WINDOW = 15  # conservative: leaves ~45/min of the real 60/min
+# quota for the Calls-tab append, Queue writes, AMD checkpoint, and backfills.
+_WINDOW_SECONDS = 60.0
+
+
+def _rate_limit_ok() -> bool:
+    """True and reserves a slot if this module is under its own budget for
+    the current rolling window; False (skip the write) if not. Thread-safe --
+    server.py calls this from multiple gthread worker threads concurrently."""
+    now = time.time()
+    with _RATE_LIMIT_LOCK:
+        cutoff = now - _WINDOW_SECONDS
+        while _write_timestamps and _write_timestamps[0] < cutoff:
+            _write_timestamps.pop(0)
+        if len(_write_timestamps) >= _MAX_WRITES_PER_WINDOW:
+            return False
+        _write_timestamps.append(now)
+        return True
 
 # Deliberately excludes: placed_at (not needed to resume), call_status/
 # recording_url (backfilled independently, not resume-critical), logged
@@ -114,7 +148,13 @@ def _serialize(rec) -> list[str]:
 def save(rec) -> None:
     """Best-effort: append the current full state. Called on essentially
     every turn from server.py -- never raises, a failure here only means
-    this one turn's progress isn't durable, not that the live call breaks."""
+    this one turn's progress isn't durable, not that the live call breaks.
+    Silently skips (not an error -- expected, graceful degradation under
+    real concurrent load) if this module's own rate budget is exhausted;
+    see _rate_limit_ok's docstring."""
+    if not _rate_limit_ok():
+        log.info("Call checkpoint write skipped (rate budget exhausted this window) for call_sid=%s", rec.call_sid)
+        return
     try:
         _ensure_tab()
         row = _serialize(rec) + [datetime.now(timezone.utc).isoformat()]

@@ -286,6 +286,15 @@ _ALT_CONTACT_PHRASES = [
     # "reach" -- too generic, would gate-in unrelated content like "reach a
     # representative" menu offers on every call.
     "can also reach", "you can reach",
+    # Broadened again 2026-09-29: a SIXTH real incident, sixth phrasing --
+    # Fire Water Pros' voicemail ("please contact the office manager, Lucas
+    # Riegelman, at his cell...") used "contact" instead of "call"/"reach",
+    # naming a role ("the office manager") rather than a bare name -- none of
+    # the verb-based fragments above match "contact". Same lesson again:
+    # widen to the object side of the redirect ("his/her cell"), which
+    # generalizes across whatever verb introduces it, rather than adding yet
+    # another verb phrase.
+    "his cell", "her cell", "office manager",
 ]
 
 _TAIL_HOLD = [

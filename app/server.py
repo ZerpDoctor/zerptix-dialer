@@ -345,22 +345,6 @@ def _compute_outcome(rec) -> tuple[str, str]:
             return "unknown", "call completed; AMD gave no usable result"
         return "unknown", ""
 
-    if not rec.ivr_detected and ivr.looks_like_menu(transcript).is_menu:
-        # Real incident 2026-09-28 (Paul Davis Restoration, right after the
-        # interim-recognition fix above): the far end hung up right after
-        # playing its full menu, before any /ivr/turn ever got a stable,
-        # complete segment to run decide_digit on -- transcript_accum ended
-        # up with the whole menu ("...press one to submit a new claim...")
-        # but rec.ivr_detected stayed False since navigation never actually
-        # ran. Falling through to decide_tail() below would just guess
-        # answered/voicemail/unknown from surrounding framing language, the
-        # same mistake mentions_incoming_menu already guards against
-        # elsewhere -- a real menu that was captured but never navigated is
-        # honestly ivr_unresolved, not a tail guess. Same looks_like_menu()
-        # used during live navigation, just applied at the one point it
-        # wasn't being run before.
-        return "ivr_unresolved", "menu detected in final transcript but call ended before navigation could run; check recording"
-
     decision = ivr.decide_tail(transcript, answered_by, rec.company_name)
     note = f"tail: {decision.reasoning}" if decision.reasoning else ""
     # classifier == "amd_fallback" gets the same honest-unknown treatment as
@@ -375,7 +359,63 @@ def _compute_outcome(rec) -> tuple[str, str]:
     # at the other two resolution sites: a transcript announcing a menu that
     # never actually arrived shouldn't be trusted even via a real read --
     # see ivr.mentions_incoming_menu's docstring for the real incident.
-    if decision.outcome == "unknown" or decision.classifier == "amd_fallback" or ivr.mentions_incoming_menu(transcript):
+    confident = (decision.outcome != "unknown" and decision.classifier != "amd_fallback"
+                 and not ivr.mentions_incoming_menu(transcript))
+    # A genuine, confirmed LIVE pickup always outranks anything below -- a
+    # redirect or gatekeeping demand mentioned earlier in the same call
+    # doesn't matter if a real person actually answered anyway. A confident
+    # "voicemail" does NOT block this, deliberately -- alt_miss is a more
+    # specific refinement of "didn't reach a live person" (a voicemail that
+    # happens to also give a redirect), not a competing outcome, so it should
+    # still be allowed to upgrade a plain voicemail read. Real incident: Fire
+    # Water Pros' voicemail read correctly as "voicemail" on its own, but the
+    # personal-redirect it also contained ("contact the office manager...at
+    # his cell") makes alt_miss the more useful, specific label.
+    resolved = confident and decision.outcome == "answered"
+
+    if not resolved and not rec.gatekeeping_detected and not rec.alt_contact_detected:
+        # Real incident 2026-09-28: Fire Water Pros' voicemail was a personal
+        # out-of-office redirect ("contact the office manager, Lucas
+        # Riegelman, at his cell...") that should be alt_miss, not plain
+        # voicemail; Ferris Water Damage Restoration's zip-code gatekeeping
+        # demand ("enter your ZIP code after the beep") arrived in the TAIL
+        # stage, post-press -- a stage that never runs gatekeeping/alt_contact
+        # checks at all (see _ivr_tail, which only calls classify_tail()).
+        # Menus already get a retroactive check (below) for the same "the
+        # live turn that would have caught this never got the chance" gap;
+        # alt_contact/gatekeeping never did, added 2026-09-29 for symmetry.
+        # Same cheap keyword pre-filter before the real (Anthropic) check as
+        # the live version in ivr_turn, so this doesn't add API cost for the
+        # common case where neither pattern is even present.
+        if ivr.looks_like_alt_contact(transcript).is_alt_contact:
+            ac = ivr.decide_alt_contact(transcript)
+            if ac.is_alt_contact and not ac.has_digit_option:
+                return "alt_miss", f"alt_contact detected in final transcript but call ended before this was caught live: {ac.reasoning}"
+        if ivr.looks_like_gatekeeping(transcript).is_gatekeeping:
+            gk = ivr.decide_gatekeeping(transcript)
+            if gk.is_gatekeeping and not gk.has_digit_option:
+                return "gatekeeping_miss", f"gatekeeping detected in final transcript but call ended before this was caught live: {gk.reasoning}"
+
+    if not confident and not rec.ivr_detected and ivr.parse_options(transcript):
+        # Real incident 2026-09-28 (Paul Davis Restoration): the far end hung
+        # up right after playing its full menu, before any /ivr/turn ever got
+        # a stable, complete segment to run decide_digit on -- transcript_accum
+        # ended up with the whole menu but rec.ivr_detected stayed False.
+        # Fixed 2026-09-29: this check originally ran BEFORE decide_tail and
+        # used looks_like_menu() -- a loose phrase-scorer (matches generic
+        # words like "to reach", "remain on the line") -- which discarded a
+        # genuinely confident decide_tail() answer sitting later in the same
+        # transcript. Real incidents: Restoration Doctor ("...This is Paula.
+        # How may I help you?" -- a real live pickup -- got thrown away
+        # because the transcript's OPENING also said "remain on the line");
+        # Crystal Restoration Services (no real menu exists at all -- a hold
+        # message with a personal-cell alt-contact redirect -- still tripped
+        # the loose phrase score). Now only fires when decide_tail ISN'T
+        # already confident, and requires parse_options() to find a REAL
+        # "press N" structure, not a loose phrase match.
+        return "ivr_unresolved", "menu detected in final transcript but call ended before navigation could run; check recording"
+
+    if not confident:
         if rec.ivr_detected:
             return "ivr_unresolved", note or "post-menu audio inconclusive; check recording"
         return "unknown", note or "call completed; audio inconclusive"
@@ -1075,7 +1115,22 @@ def _ivr_tail(call_sid: str, rec) -> Response:
     tail_class = ivr.classify_tail(tail) if tail else "unknown"
     conclusive = tail_class in ("answered", "voicemail")
     over_budget = STORE.seconds_since_answered(call_sid) >= CFG.ivr_master_timeout_seconds - 3
-    if conclusive or over_budget:
+    if conclusive:
+        _resolve(call_sid)
+        return _twiml("<Hangup/>")
+    if over_budget:
+        # Real incident 2026-09-28 (HS Restoration): this check resolves the
+        # call directly, same as the top-level master-timer check in
+        # ivr_turn(), but -- unlike that one -- never set hit_time_cap. Since
+        # _compute_outcome()'s FIRST branch is gated on that flag, a call
+        # that correctly pressed a real digit (ivr_detected=True) and then
+        # ran out of time HERE fell through to the wrong "ivr_unresolved"
+        # ("no digit could be determined" -- false, we determined and
+        # pressed one) instead of the correct "extended_hold" (ran out of
+        # time after real navigation, no resolution). Setting the flag here
+        # too routes it through the same cap_transcript/decide_tail logic
+        # the top-level check already uses.
+        STORE.update(call_sid, hit_time_cap=True)
         _resolve(call_sid)
         return _twiml("<Hangup/>")
     return _twiml(_gather("tail", 0, CFG.ivr_tail_gather_seconds))
