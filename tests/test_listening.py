@@ -79,7 +79,7 @@ def played(xml):
     return m.group(1) if m else None
 
 
-class ListeningTests(unittest.TestCase):
+class ListeningBase(unittest.TestCase):
     def setUp(self):
         self._orig = {
             "verify": server._verify, "resolve": server._resolve,
@@ -108,7 +108,9 @@ class ListeningTests(unittest.TestCase):
         ivr.classify_gatekeeping = self._orig["g"]
         CFG.stream_transcription_enabled, CFG.listen_gate_enabled = self._orig["cfg"]
 
-    # -----------------------------------------------------------------------
+
+
+class ListeningTests(ListeningBase):
     def test_does_not_press_while_prompt_is_still_being_spoken(self):
         """Greenville Restoration Services / Yeti: the digit went out while the
         far end was mid-prompt and the rest of the menu arrived as 'post-press'
@@ -140,10 +142,10 @@ class ListeningTests(unittest.TestCase):
         self.assertEqual(c.rec.gather_count, before)
         self.assertEqual(c.rec.speaking_deferrals, 1)
 
-    def test_deferral_is_bounded_so_a_looping_menu_cannot_stall_forever(self):
+    def test_deferral_is_bounded_so_continuous_speech_cannot_stall_forever(self):
         c = Call(self.client)
-        for _ in range(CFG.listen_max_defers + 1):
-            c.speak("Press one to be connected.")     # far end never stops
+        for i in range(CFG.listen_max_defers + 1):
+            c.speak(f"Thank you for your patience, announcement number {i}.")     # far end never stops
             c.turn()
         self.assertEqual(c.rec.speaking_deferrals, 0, "must have proceeded to decide after the cap")
 
@@ -183,6 +185,124 @@ class ListeningTests(unittest.TestCase):
         c.turn(); c.turn()
         self.assertIn("press 1", c.rec.press_diag)
         self.assertIn("far end quiet", c.rec.press_diag)
+
+
+class PressTimingTests(ListeningBase):
+    """Presses must land inside the phone system's input window (~3-5s after
+    the prompt). 2026-09-30 franchise tests pressed 3-10s late and SERVPRO East
+    Nashville answered "Invalid input" before our digit arrived."""
+
+    MENU = ("Thank you for calling. Press one for emergency services. Press two for scheduling. "
+            "Press zero for all other calls.")
+
+    def test_presses_on_the_first_turn_once_the_menu_is_over(self):
+        c = Call(self.client)
+        c.speak(self.MENU)
+        c.go_quiet(2.5)                     # the prompt ended 2.5s ago
+        c.turn()
+        self.assertEqual(c.rec.digits_sent, ["1"], "no extra stability poll should be needed")
+
+    def test_waits_while_the_silence_is_shorter_than_the_press_quiet(self):
+        c = Call(self.client)
+        c.speak(self.MENU)
+        c.go_quiet(1.4)                     # past 'mid-word', not yet 'menu over'
+        c.turn()
+        self.assertEqual(c.rec.digits_sent, [])
+        self.assertEqual(c.rec.press_waits, 1)
+        c.go_quiet(2.6)
+        c.turn()
+        self.assertEqual(c.rec.digits_sent, ["1"])
+
+    def test_a_looping_menu_is_pressed_without_waiting_for_a_long_silence(self):
+        c = Call(self.client)
+        c.speak("Press one for the next available customer service representative.")
+        c.speak("Press one for the next available customer service representative.")
+        c.buf.last_activity = time.time() - 0.4     # the loop restarts almost immediately
+        c.turn()
+        self.assertEqual(c.rec.digits_sent, ["1"])
+
+    def test_the_press_wait_is_bounded(self):
+        c = Call(self.client)
+        for _ in range(CFG.listen_press_max_waits + 2):
+            c.speak("Press one for sales.")
+            c.buf.last_activity = time.time() - 1.4
+            c.turn()
+        self.assertTrue(c.rec.digits_sent, "must press eventually even if the line never gets quiet enough")
+
+
+class QuickDigitTests(unittest.TestCase):
+    def q(self, t):
+        r = ivr.quick_digit(t)
+        return None if r is None else r[0]
+
+    def test_the_menu_names_its_emergency_option(self):
+        self.assertEqual(self.q("Press one for sales. Press two for billing. Press three for emergency service."), "3")
+
+    def test_the_only_option_connects_to_a_person(self):
+        self.assertEqual(self.q("Please press one to be connected."), "1")                      # RestoreCo
+        self.assertEqual(self.q("Welcome to Property Craft. Press one to speak to our representative."), "1")
+        self.assertEqual(self.q("Press one for the next available customer service representative."), "1")  # 911
+
+    def test_a_spoken_seven_is_not_a_menu_option(self):
+        """S And S Repair: 'available twenty four seven to assist you' parsed as option 7."""
+        t = ("We are available twenty four seven to assist you. If this is an emergency and you require "
+             "immediate assistance, please press one now to be connected to our emergency team.")
+        self.assertEqual(self.q(t), "1")
+
+    def test_ambiguous_menus_go_to_the_model(self):
+        self.assertIsNone(self.q("Press one for sales. Press two for support. Press zero for the operator."))
+
+    def test_voicemail_menus_and_message_options_are_never_quick(self):
+        self.assertIsNone(self.q("Please leave a message. To review, press one. To re-record, press two."))
+        self.assertIsNone(self.q("If this is an emergency, press two to leave an emergency message."))
+
+
+class StreamRecoveryTests(ListeningBase):
+    """2 of 11 franchise tests were blank because the media stream failed:
+    'never connected', and '12 frames in a 48s call'."""
+
+    def aged(self, c, seconds=10.0):
+        server.STORE.update(c.sid, answered_at=time.time() - seconds)
+
+    def test_a_stream_that_never_connected_is_restarted(self):
+        c = Call(self.client)
+        c.buf.connected_at = None
+        self.aged(c)
+        xml = c.turn()
+        self.assertIn('<Stream name="rs1"', xml)
+        self.assertEqual(c.rec.stream_restarts, 1)
+        self.assertIn("stream restart #1", c.rec.press_diag)
+
+    def test_a_stream_that_stops_sending_audio_is_restarted(self):
+        c = Call(self.client)
+        self.aged(c)
+        c.buf.frames = 12
+        c.turn()                                              # first sight of 12 frames
+        server.STORE.update(c.sid, stream_frames_changed_at=time.time() - 7)
+        xml = c.turn()                                        # still 12, unchanged for 7s
+        self.assertIn('<Stream name="rs1"', xml)
+
+    def test_a_healthy_stream_is_left_alone(self):
+        c = Call(self.client)
+        self.aged(c)
+        c.buf.frames = 100
+        c.turn()
+        c.buf.frames = 300
+        self.assertNotIn("<Stream", c.turn())
+
+    def test_a_brand_new_call_is_given_time_to_connect(self):
+        c = Call(self.client)
+        c.buf.connected_at = None
+        self.aged(c, 3.0)
+        self.assertNotIn("<Stream", c.turn())
+
+    def test_restarts_are_bounded(self):
+        c = Call(self.client)
+        c.buf.connected_at = None
+        self.aged(c)
+        for _ in range(CFG.stream_max_restarts + 3):
+            c.turn()
+        self.assertEqual(c.rec.stream_restarts, CFG.stream_max_restarts)
 
 
 class EmergencyFlagTests(unittest.TestCase):

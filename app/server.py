@@ -195,6 +195,31 @@ def media_stream_ws(ws, call_sid: str) -> None:
         log.error("media_stream_ws route CRASHED for call_sid=%s: %s", call_sid, e, exc_info=True)
 
 
+def _stream_problem(call_sid: str, rec, buf) -> str | None:
+    """Why this call's media stream needs restarting, or None if it looks fine.
+    Never connected, or stopped sending audio. Real blank-transcript calls
+    2026-09-30: SERVPRO Charlotte ("stream: never connected") and Rainbow Far
+    North Dallas ("connected, 12 audio frames" in a 48s call)."""
+    age = STORE.seconds_since_answered(call_sid)
+    now = time.time()
+    if buf.frames != rec.stream_frames_seen:
+        STORE.update(call_sid, stream_frames_seen=buf.frames, stream_frames_changed_at=now)
+        changed = True
+    else:
+        changed = False
+    if age < 7 or rec.stream_restarts >= CFG.stream_max_restarts:
+        return None
+    if buf.error and "not set" in buf.error:
+        return None                      # a config problem; restarting cannot help
+    if buf.connected_at is None:
+        return "the stream never connected"
+    if not changed:
+        since = now - (rec.stream_frames_changed_at or now)
+        if since >= 6.0:
+            return f"audio stopped arriving after {buf.frames} frames"
+    return None
+
+
 def _deadline_seconds(rec) -> float:
     """Seconds after answer at which a call's wait ends.
 
@@ -902,6 +927,23 @@ def ivr_turn(stage: str, level: int) -> Response:
         _resolve(call_sid)
         return _twiml("<Hangup/>")
 
+    # 1a. Recover a dead media stream. A call whose stream never connected or
+    # stopped sending audio produces a blank transcript no matter what the far
+    # end says. A new <Start><Stream> on this turn's reply opens a fresh one.
+    if CFG.stream_transcription_enabled and CFG.stream_restart_enabled:
+        _sbuf = media_stream.get_buffer(call_sid)
+        _problem = _stream_problem(call_sid, rec, _sbuf)
+        if _problem:
+            n = rec.stream_restarts + 1
+            log.warning("Restarting media stream #%d call_sid=%s: %s", n, call_sid, _problem)
+            STORE.update(call_sid, stream_restarts=n, stream_frames_seen=-1, stream_frames_changed_at=None,
+                         gather_count=max(0, rec.gather_count - 1),
+                         press_diag=(rec.press_diag + "; " if rec.press_diag else "")
+                                    + f"stream restart #{n} at +{STORE.seconds_since_answered(call_sid):.0f}s ({_problem})")
+            _url = CFG.stream_url(f"media-stream/{call_sid}")
+            return _twiml(f'<Start><Stream name="rs{n}" url="{_url}"/></Start>'
+                          + _gather(stage, level, CFG.listen_recheck_seconds))
+
     # 1b. Never decide while the far end is still mid-speech. Everything below
     # -- pressing a digit, concluding "not a menu", the early answered/voicemail
     # resolutions, gatekeeping/alt-contact hangups, the post-press tail -- acts
@@ -913,7 +955,12 @@ def ivr_turn(stage: str, level: int) -> Response:
     # listen_max_defers in a row and by the master timer above.
     if CFG.stream_transcription_enabled and CFG.listen_gate_enabled:
         _buf = media_stream.get_buffer(call_sid)
-        if _buf.is_speaking(CFG.listen_quiet_seconds) and rec.speaking_deferrals < CFG.listen_max_defers:
+        # A menu that has already been read through twice is complete and
+        # looping (911 Restoration repeated "press one for the next available
+        # representative" for ~27s before we pressed): nothing left to wait for.
+        _looping = stage == "menu" and ivr.menu_repeats(rec.transcript_accum[rec.transcript_at_last_digit:])
+        if (_buf.is_speaking(CFG.listen_quiet_seconds) and not _looping
+                and rec.speaking_deferrals < CFG.listen_max_defers):
             # A deferred turn is not a "listen": several early-resolution rules
             # count turns ("heard at least 2 turns before trusting answered"),
             # so a 2s deferral must not satisfy them on a greeting that has not
@@ -1023,6 +1070,12 @@ def ivr_turn(stage: str, level: int) -> Response:
     # design and don't commit to a digit, so they aren't vulnerable to this.
     grew = len(segment) > rec.segment_len_at_last_check
     STORE.update(call_sid, segment_len_at_last_check=len(segment))
+    if CFG.stream_transcription_enabled and CFG.listen_gate_enabled:
+        # The listening gate above already established that the far end is not
+        # mid-speech; waiting a further whole poll cycle (~4s) for "no new
+        # text" only made digits arrive after the phone system's input window
+        # had closed. Pressing still waits for a longer quiet (below).
+        grew = False
 
     if grew and level == 0:
         # Cap consecutive deferrals, but ONLY at level 0 (before any digit
@@ -1097,6 +1150,19 @@ def ivr_turn(stage: str, level: int) -> Response:
     if (menu_look and not already_on_emergency_route
             and (menu_look.is_menu or (gatekeeping and gatekeeping.has_digit_option)
                  or (alt_contact and alt_contact.has_digit_option))):
+        # Press only once the menu is over: a longer silence than the general
+        # listening gate, or the menu repeating (complete and looping).
+        if CFG.stream_transcription_enabled and CFG.listen_gate_enabled:
+            _q = media_stream.get_buffer(call_sid).quiet_for()
+            if (_q is not None and _q < CFG.listen_press_quiet_seconds
+                    and not ivr.menu_repeats(segment)
+                    and rec.press_waits < CFG.listen_press_max_waits):
+                STORE.update(call_sid, press_waits=rec.press_waits + 1,
+                             gather_count=max(0, rec.gather_count - 1))
+                return _twiml(_gather(stage, level, 1))
+        if rec.press_waits:
+            STORE.update(call_sid, press_waits=0)
+
         decision = ivr.decide_digit(segment)
 
         if decision.is_menu:

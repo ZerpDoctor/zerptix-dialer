@@ -158,6 +158,18 @@ class Config:
     listen_quiet_seconds: float = 1.2
     listen_max_defers: int = 4
     listen_recheck_seconds: int = 2
+    # Pressing a digit needs a longer silence than merely "not mid-word": the
+    # menu must be over. 2.0s of quiet, or the menu repeating, then press.
+    # (Phone systems only wait ~3-5s for input after a prompt; 2026-09-30's
+    # franchise tests pressed 3-10s after the prompt ended, and SERVPRO East
+    # Nashville answered "Invalid input" before our digit arrived.)
+    listen_press_quiet_seconds: float = 2.0
+    listen_press_max_waits: int = 6
+    # Media-stream recovery: a stream that never connects, or stops sending
+    # audio, is restarted on the next turn (blank-transcript calls: 2 of 11
+    # franchise tests -- "never connected", and "12 frames in a 48s call").
+    stream_restart_enabled: bool = True
+    stream_max_restarts: int = 2
     # Hold budget: ivr_hold_budget_seconds is counted from the LAST digit
     # press (or from answer if none was pressed), so time spent in menus no
     # longer eats the wait for a person. ivr_master_timeout_seconds remains
@@ -327,6 +339,10 @@ def load() -> Config:
         listen_quiet_seconds=float(_get("LISTEN_QUIET_SECONDS", "1.2") or "1.2"),
         listen_max_defers=int(_get("LISTEN_MAX_DEFERS", "4") or "4"),
         listen_recheck_seconds=int(_get("LISTEN_RECHECK_SECONDS", "2") or "2"),
+        listen_press_quiet_seconds=float(_get("LISTEN_PRESS_QUIET_SECONDS", "2.0") or "2.0"),
+        listen_press_max_waits=int(_get("LISTEN_PRESS_MAX_WAITS", "6") or "6"),
+        stream_restart_enabled=_bool("STREAM_RESTART_ENABLED", True),
+        stream_max_restarts=int(_get("STREAM_MAX_RESTARTS", "2") or "2"),
         ivr_hold_budget_seconds=int(_get("IVR_HOLD_BUDGET_SECONDS", "60") or "60"),
         ivr_hard_cap_seconds=int(_get("IVR_HARD_CAP_SECONDS", "110") or "110"),
         gatekeeping_detection_enabled=_bool("GATEKEEPING_DETECTION_ENABLED", True),

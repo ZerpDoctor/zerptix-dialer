@@ -707,6 +707,60 @@ def choose_digit_by_priority(transcript: str) -> DigitPick:
     return DigitPick(digit, "no emergency/representative option; took lowest offered digit", True)
 
 
+_CONNECT_WORDS = (
+    "to be connected", "to speak", "speak with", "speak to", "representative", "customer service",
+    "next available", "an agent", "operator", "a person", "someone", "to reach", "to talk",
+)
+_NOT_A_LIVE_OPTION = ("message", "voicemail", "voice mail", "mailbox", "record")
+
+
+def menu_repeats(transcript: str) -> bool:
+    """True if the same "press N ..." sentence has been read at least twice --
+    the menu is complete and looping, so there is nothing left to wait for."""
+    from collections import Counter
+    sents = [re.sub(r"[^a-z0-9 ]", "", s.lower()).strip() for s in re.split(r"[.?!]", transcript or "")]
+    opts = Counter(s for s in sents if s and _OPT_ANCHOR.search(s))
+    return any(n >= 2 for n in opts.values())
+
+
+def quick_digit(transcript: str) -> tuple[str, str, bool] | None:
+    """(digit, reason, is_emergency) when the choice needs no model, else None.
+
+    Two unambiguous shapes only: (1) the menu itself calls one option the
+    emergency / after-hours one; (2) the menu has exactly one option and it
+    connects you to a person ("press one to be connected", "press one for the
+    next available customer service representative"). Everything else --
+    several options with no emergency one, voicemail menus -- goes to the model.
+    Real incidents 2026-09-30: the model call alone took ~3.4s, which, added
+    to the poll and stability waits, made presses miss the phone system's input
+    window (911 Restoration, RestoreCo, Property Craft, SERVPRO East Nashville)."""
+    t = (transcript or "").lower().strip()
+    if not t:
+        return None
+    if any(p in t for p in _VOICEMAIL_CONTROL_PHRASES) or any(p in t for p in _TAIL_VOICEMAIL_STRONG_IDENTITY):
+        return None
+    # Only options introduced by an explicit press verb count: a bare
+    # "<digit> to/for" also matches ordinary speech -- "available twenty four
+    # SEVEN TO assist you" parsed as option 7 (S And S Repair, 2026-09-26).
+    press_digits = {_norm_digit(m.group("d1")) for m in _OPT_ANCHOR.finditer(t) if m.group("d1")}
+    options = [(d, lab) for d, lab in parse_options(t) if d in press_digits]
+    if not options:
+        return None
+    before = dict(_before_labels(t))
+    for digit, label in options:
+        if option_is_emergency(t, digit):
+            text = f"{label} {before.get(digit, '')}"
+            if any(w in text for w in _NOT_A_LIVE_OPTION):
+                return None          # "press 2 to leave an emergency message" is not the live line
+            return digit, f"the menu names {digit} as its emergency option", True
+    if len(options) == 1:
+        digit, label = options[0]
+        text = f"{label} {before.get(digit, '')}"
+        if any(w in text for w in _CONNECT_WORDS) and not any(w in text for w in _NOT_A_LIVE_OPTION):
+            return digit, f"the only option, {digit}, connects to a person", False
+    return None
+
+
 def option_is_emergency(transcript: str, digit: str | None) -> bool:
     """True if the menu itself describes `digit` as an emergency/after-hours
     option -- wording after the digit ("press 1 for emergencies") or before
@@ -755,6 +809,10 @@ def decide_digit(transcript: str) -> Decision:
     if screen_digit:
         return Decision(True, screen_digit, "keyword", False,
                         f"call-screening prompt asks to verify human by pressing {screen_digit}")
+    quick = quick_digit(transcript)
+    if quick:
+        return Decision(True, quick[0], "keyword", False, f"rule: {quick[1]}", is_emergency_route=quick[2])
+
     keyword_look = looks_like_menu(transcript)
     options = parse_options(transcript)
     has_emergency = any(w in transcript.lower() for w in _EMERGENCY_WORDS)
