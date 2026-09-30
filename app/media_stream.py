@@ -82,6 +82,57 @@ class StreamBuffer:
     # words Deepgram had already heard but hadn't finalized yet. See
     # has_interim()'s call site in ivr_turn.
 
+    # --- "is the far end still talking?" (listen-like-a-human gate) ---------
+    # Deepgram emits interim/final results continuously while someone speaks,
+    # so recent non-empty transcript activity IS the mid-speech signal. This
+    # replaces guessing "the prompt finished" from whether accumulated text
+    # grew between two ~4s polls (the design that let the dialer press a digit
+    # or resolve mid-prompt -- Greenville, Yeti, Rocky Mountain, Restoration
+    # Doctor, On Site, Boston Harbor, DriForce). Uses only results the stream
+    # already delivers; no Deepgram connection parameters changed.
+    last_activity: float | None = None   # wall time of the last non-empty interim/final result
+    first_text_at: float | None = None   # wall time of the first non-empty result
+    frames: int = 0                      # audio frames forwarded to Deepgram
+    results: int = 0                     # non-empty transcript results received
+
+    def note_activity(self) -> None:
+        now = time.time()
+        self.last_activity = now
+        self.results += 1
+        if self.first_text_at is None:
+            self.first_text_at = now
+
+    def quiet_for(self) -> float | None:
+        """Seconds since the last transcript activity; None if there has been none."""
+        la = self.last_activity
+        return None if la is None else max(0.0, time.time() - la)
+
+    def is_speaking(self, quiet_seconds: float) -> bool:
+        """True while the far end is (very probably) mid-speech: transcript
+        activity within `quiet_seconds`, or an interim still awaiting
+        finalization that was updated within a slightly longer window (a
+        pause between words can make an interim briefly stall)."""
+        age = self.quiet_for()
+        if age is None:
+            return False
+        if age < quiet_seconds:
+            return True
+        with self.lock:
+            has_interim = bool(self.interim.strip())
+        return has_interim and age < max(quiet_seconds * 2.5, 2.5)
+
+    def stats_note(self, answered_at: float | None) -> str:
+        """Compact stream evidence for the Calls notes -- so a blank transcript
+        can be told apart from silence: no connection, connected but no audio,
+        audio forwarded but no words recognized."""
+        if self.error:
+            return f"stream: error ({self.error[:60]})"
+        if self.connected_at is None:
+            return "stream: never connected"
+        first = ("none" if self.first_text_at is None
+                 else f"+{self.first_text_at - (answered_at or self.connected_at):.0f}s")
+        return f"stream: connected, {self.frames} audio frames, {self.results} text results, first text {first}"
+
     def append(self, text: str) -> None:
         if not text.strip():
             return
@@ -129,6 +180,12 @@ def get_buffer(call_sid: str) -> StreamBuffer:
         return buf
 
 
+def peek_buffer(call_sid: str) -> StreamBuffer | None:
+    """Like get_buffer but never creates one -- for read-only diagnostics."""
+    with _buffers_lock:
+        return _buffers.get(call_sid)
+
+
 def drop_buffer(call_sid: str) -> None:
     """Release a finished call's buffer. Best-effort -- a missed cleanup
     just leaks a small dict entry until process restart, never breaks
@@ -163,6 +220,7 @@ def _deepgram_reader(dg_ws, buf: StreamBuffer, call_sid: str, stop_event: thread
         text = alternatives[0].get("transcript", "")
         if not text:
             continue
+        buf.note_activity()
         if data.get("is_final"):
             buf.append(text)
             log.info("Deepgram final segment call_sid=%s: %r", call_sid, text)
@@ -228,6 +286,7 @@ def handle_signalwire_stream(ws, call_sid: str) -> None:
                 try:
                     dg_ws.send(base64.b64decode(payload_b64))
                     frames_forwarded += 1
+                    buf.frames = frames_forwarded
                 except Exception as e:  # noqa: BLE001
                     log.warning("Deepgram send failed for call_sid=%s: %s", call_sid, e)
                     break

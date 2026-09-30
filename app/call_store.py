@@ -51,6 +51,12 @@ class CallRecord:
     # so decide_digit() never even ran once, despite hearing a clear "press
     # one for..." option four separate times. Capped in ivr_turn so a
     # looping menu can't defer forever; reset alongside the fields above.
+    speaking_deferrals: int = 0         # consecutive turns skipped because the far
+    # end was still mid-speech (see CFG.listen_gate_enabled); reset whenever a
+    # turn actually gets to decide
+    last_digit_at: float | None = None  # wall time of the most recent digit
+    # press -- the hold budget is counted from here (see server._deadline_seconds)
+    press_diag: str = ""                # per-press timing evidence, appended to the Calls notes
     ivr_detected: bool = False
     menu_levels: int = 0                # how many menus we navigated (digits sent)
     digits_sent: list[str] = field(default_factory=list)
@@ -267,6 +273,7 @@ class CallStore:
         with self._lock:
             rec = self._by_sid[call_sid]
             rec.digits_sent.append(digit)
+            rec.last_digit_at = time.time()
             rec.menu_levels = len(rec.digits_sent)
             rec.ivr_detected = True
             rec.classifier = classifier
@@ -275,7 +282,13 @@ class CallStore:
             rec.transcript_at_last_digit = len(rec.transcript_accum)
             rec.segment_len_at_last_check = 0
             rec.consecutive_growth_turns = 0
-            rec.emergency_route = rec.emergency_route or is_emergency_route
+            # Describes the route we ended up on, i.e. the LAST digit pressed.
+            # It used to stay true once any press was the emergency option,
+            # so a call that pressed the emergency digit and then a second,
+            # non-emergency one (Rare Restoration 1,2 -> "mitigation customer
+            # service") still claimed to have routed to the emergency line --
+            # and the business replied that it had not.
+            rec.emergency_route = is_emergency_route
             return rec
 
     def mark_menu_no_digit(self, call_sid: str, classifier: str, reasoning: str) -> CallRecord:

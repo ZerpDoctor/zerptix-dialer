@@ -602,7 +602,24 @@ def parse_options(transcript: str) -> list[tuple[str, str]]:
         if not digit or digit in seen:
             continue
         seen.add(digit)
-        end = anchors[i + 1].start() if i + 1 < len(anchors) else min(len(t), m.end() + 60)
+        if i + 1 < len(anchors):
+            end = anchors[i + 1].start()
+        else:
+            # Last option: read on to the end of its sentence (capped at 120
+            # chars) instead of a fixed 60 -- "press one now if you are
+            # experiencing a flood or fire for our twenty four hour emergency
+            # response line" put "emergency" at char 75 and the option was
+            # never seen as the emergency one (Rare Restoration).
+            # Only for punctuated (Deepgram-era) text: with no sentence end to
+            # stop at, the wider window bleeds closing text ("...connecting
+            # you to our emergency team") into the last option's label.
+            if re.search(r"[.?!]", t):
+                end = min(len(t), m.end() + 120)
+                stop = re.search(r"[.?!]", t[m.end():end])
+                if stop:
+                    end = m.end() + stop.start()
+            else:
+                end = min(len(t), m.end() + 60)
         label = t[m.end():end].strip(" ,.;:-")
         found.append((digit, label))
     return found
@@ -880,6 +897,91 @@ _DISCONNECTED_PHRASES = [
     "has been disconnected", "not a working number", "number you have dialed is not",
     "cannot be completed as dialed",
 ]
+# Things only a person (or a live greeting) says -- self-introduction, an
+# offer to help, a reactive "Hello?" -- as opposed to a recording's wording.
+_HUMAN_MARKER = re.compile(
+    r"\b(this is [a-z]+|my name is|speaking|how (can|may) (i|we) (help|assist)|can i help|may i help|"
+    r"what can i do|hello|hi there|are you there|can you hear me)\b")
+
+
+def menu_recording_only(transcript: str) -> str | None:
+    """Reason string if everything heard is a menu RECORDING -- two or more
+    "press N" options and nothing after the last option that only a person
+    would say. Real incident 2026-09-29: BoneDry Services logged `answered`
+    from "Press one for water emergency... press five for billing. Thank you
+    for calling Bone Dry Services." -- a bare business name plus "thank you
+    for calling" after a menu is the recording's own closing line, not a
+    person picking up."""
+    t = (transcript or "").lower()
+    # A voicemail box reads out its own "press one to disconnect, press two to
+    # record" controls -- also options, also no person -- but that is a
+    # voicemail, decided elsewhere.
+    if any(p in t for p in _TAIL_VOICEMAIL) or any(p in t for p in _VOICEMAIL_CONTROL_PHRASES):
+        return None
+    anchors = list(_OPT_ANCHOR.finditer(t))
+    if len({(m.group("d1") or m.group("d2")) for m in anchors}) < 2:
+        return None
+    after = t[anchors[-1].end():]
+    if _HUMAN_MARKER.search(after) or "?" in after:
+        return None
+    return "only a menu recording was heard (options read out, no person spoke after them)"
+
+
+_NAME_STOPWORDS = {"the", "and", "of", "inc", "llc", "co", "company", "services", "service", "a", "&"}
+
+
+def _name_tokens(name: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", (name or "").lower()) if w not in _NAME_STOPWORDS and len(w) > 1}
+
+
+def post_hold_name_greeting(transcript: str, company_name: str) -> str | None:
+    """Reason string if, AFTER the last hold/transfer announcement, the call
+    ends with short sentence(s) that just state the business's own name -- how
+    a person answers a line ("Jimmy Garza emergency water removal.") -- and
+    nothing hold-like follows. Real incident 2026-09-29: Jimmy Garza Emergency
+    Water Removal ("...Please hold for the next available agent. Jenny Garza.
+    Emergency water removal. Jimmy Garza emergency water removal.") was logged
+    extended_hold. A recorded "Thank you for calling X" is excluded on
+    purpose, and the name must be the company's own (>=2 distinctive tokens)."""
+    want = _name_tokens(company_name)
+    if len(want) < 2:
+        return None
+    sents = [s.strip() for s in re.split(r"[.?!]", (transcript or "")) if s.strip()]
+    hold_idx = [i for i, s in enumerate(sents) if any(p in s.lower() for p in _TAIL_HOLD)]
+    if not hold_idx:
+        return None
+    after = sents[hold_idx[-1] + 1:]
+    if not after:
+        return None
+    for s in after:
+        low = s.lower()
+        if len(s.split()) > 8 or _OPENER_THANKS.match(low) or any(p in low for p in _TAIL_HOLD):
+            return None
+        if any(p in low for p in _TAIL_VOICEMAIL):
+            return None
+    tail_tokens = _name_tokens(after[-1])
+    if len(want & tail_tokens) >= 2 or (want and len(want & tail_tokens) / len(want) >= 0.6):
+        return "after the hold announcement a person answered by stating the business name"
+    return None
+
+
+_INTRO_OR_QUESTION = re.compile(
+    r"\b(this is [a-z]+|my name is|speaking|how (can|may) (i|we) (help|assist)|can i help|may i help|hello)\b")
+
+
+def thin_answer_reason(tail: str) -> str | None:
+    """Why an `answered` call rests on thin evidence, or None if it has a
+    personal name, an offer to help, a question or a reactive "Hello?". Not a
+    verdict -- a tag written to the notes so thin answers can be filtered and
+    spot-checked (Keystone: just "Keystone restoration.")."""
+    t = (tail or "").strip().lower()
+    if not t:
+        return "no transcript"
+    if "?" in t or _INTRO_OR_QUESTION.search(t):
+        return None
+    return "greeting/business name only -- no personal name, question or reactive Hello"
+
+
 _OPENER_THANKS = re.compile(
     r"^(thank you for (calling|choosing|contacting|reaching)|thanks for (calling|choosing|contacting)|welcome to)\b")
 _OPENER_RECORDED = re.compile(r"\bcalls?\b.*\b(recorded|monitored)\b")
@@ -965,6 +1067,10 @@ def decide_tail(transcript: str, answered_by: str | None, company_name: str = ""
     ms = menu_start_reason(transcript)
     if ms:
         return TailDecision("unknown", "menu_start", ms, False)
+
+    ph = post_hold_name_greeting(transcript, company_name)
+    if ph:
+        return TailDecision("answered", "keyword", ph, amd_guess == "voicemail")
 
     def _from_keyword_or_amd(prefix: str) -> TailDecision:
         kw = classify_tail(transcript)

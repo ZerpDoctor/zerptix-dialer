@@ -194,8 +194,30 @@ def media_stream_ws(ws, call_sid: str) -> None:
         log.error("media_stream_ws route CRASHED for call_sid=%s: %s", call_sid, e, exc_info=True)
 
 
+def _deadline_seconds(rec) -> float:
+    """Seconds after answer at which a call's wait ends.
+
+    The 60s master timer used to cover navigation AND hold together, so time
+    spent in a menu came straight out of the wait for a person: a call that
+    pressed a digit at 25s only got ~35s of hold. The hold budget now counts
+    from the LAST digit press (60s), with the old master timer as the floor
+    and CFG.ivr_hard_cap_seconds as the absolute ceiling. A call with no
+    press is unchanged (60s from answer)."""
+    floor = float(CFG.ivr_master_timeout_seconds)
+    pressed = getattr(rec, "last_digit_at", None)
+    answered = getattr(rec, "answered_at", None)
+    if pressed and answered:
+        floor = max(floor, (pressed - answered) + CFG.ivr_hold_budget_seconds)
+    return min(floor, float(CFG.ivr_hard_cap_seconds))
+
+
+def _budget_exhausted(call_sid: str, rec, margin: float = 0.0) -> bool:
+    return STORE.seconds_since_answered(call_sid) >= _deadline_seconds(rec) - margin
+
+
 def _amd_pause_seconds(call_sid: str) -> int:
-    remaining = CFG.ivr_master_timeout_seconds - STORE.seconds_since_answered(call_sid)
+    rec = STORE.get(call_sid)
+    remaining = _deadline_seconds(rec) - STORE.seconds_since_answered(call_sid)
     return max(3, min(int(remaining), 30))
 
 
@@ -351,9 +373,11 @@ def _compute_outcome(rec) -> tuple[str, str]:
             # 2026-09-29. 0.0 means the answered-time is unknown (a rehydrated
             # record), where the old behavior is kept.
             elapsed = STORE.seconds_since_answered(rec.call_sid)
-            if 0.0 < elapsed < 50.0:
-                return "ivr_unresolved", (f"call ended {int(elapsed)}s in with nothing heard after the digit press "
-                                          "(not a hold -- the budget was not used); check recording")
+            _pressed = getattr(rec, "last_digit_at", None)
+            held = (time.time() - _pressed) if _pressed else elapsed
+            if 0.0 < elapsed and held < CFG.ivr_hold_budget_seconds - 10:
+                return "ivr_unresolved", (f"call ended {int(held)}s after the digit press with nothing heard "
+                                          "(not a hold -- the hold budget was not used); check recording")
             return "extended_hold", "silence after menu navigation (likely on hold / in queue)"
         # AMD alone on a connected call with literally nothing transcribed is
         # the same pure-guess pattern already downgraded at every other
@@ -371,6 +395,17 @@ def _compute_outcome(rec) -> tuple[str, str]:
         if cs == "completed":
             return "unknown", "call completed; AMD gave no usable result"
         return "unknown", ""
+
+    if rec.digits_sent:
+        # After a digit press, if all that came back is the menu being read out
+        # (options, no person after them) nobody has picked up. Judged on the
+        # RAW post-press slice -- _tail_of() has already stripped leading menu
+        # sentences. Real incident 2026-09-29: BoneDry Services logged answered
+        # from "...press five for billing. Thank you for calling Bone Dry
+        # Services."
+        _mro = ivr.menu_recording_only(rec.transcript_accum[rec.transcript_at_last_digit:])
+        if _mro:
+            return "ivr_unresolved", f"tail: {_mro}"
 
     decision = ivr.decide_tail(transcript, answered_by, rec.company_name)
     note = f"tail: {decision.reasoning}" if decision.reasoning else ""
@@ -462,6 +497,16 @@ def _build_row(rec, outcome: str, note: str) -> dict:
         notes.append(f"gatekeeping: {rec.gatekeeping_reasoning}")
     if rec.alt_contact_reasoning:
         notes.append(f"alt_contact: {rec.alt_contact_reasoning}")
+    if rec.press_diag:
+        notes.append(f"diag: {rec.press_diag}")
+    if outcome in ("unknown", "ivr_unresolved") or not rec.transcript_accum.strip():
+        _sbuf = media_stream.peek_buffer(rec.call_sid)
+        if _sbuf is not None:
+            notes.append(_sbuf.stats_note(rec.answered_at))
+    if outcome == "answered":
+        _thin = ivr.thin_answer_reason(_tail_of(rec))
+        if _thin:
+            notes.append(f"evidence: thin ({_thin})")
     if CFG.test_mode:
         notes.append("TEST_MODE")
     now_utc = datetime.now(timezone.utc)
@@ -848,11 +893,36 @@ def ivr_turn(stage: str, level: int) -> Response:
         call_sid, stage, level, rec.gather_count, speech[:200],
     )
 
-    # 1. Master timer (covers IVR + hold combined, spec section 3).
-    if STORE.seconds_since_answered(call_sid) >= CFG.ivr_master_timeout_seconds:
+    # 1. Master timer -- 60s from answer, extended to 60s of hold counted from
+    # the last digit press (hard-capped), see _deadline_seconds.
+    if _budget_exhausted(call_sid, rec):
         STORE.update(call_sid, hit_time_cap=True)
         _resolve(call_sid)
         return _twiml("<Hangup/>")
+
+    # 1b. Never decide while the far end is still mid-speech. Everything below
+    # -- pressing a digit, concluding "not a menu", the early answered/voicemail
+    # resolutions, gatekeeping/alt-contact hangups, the post-press tail -- acts
+    # on a transcript that is still being spoken if this turn lands mid-prompt
+    # (the fixed ~4s poll has no relationship to where a sentence ends). That
+    # is the root of the cut-off transcripts, mid-prompt digit presses and
+    # leftover-menu-as-outcome bugs. The text heard so far is already stored
+    # (add_turn above), so deferring loses nothing; it is bounded by
+    # listen_max_defers in a row and by the master timer above.
+    if CFG.stream_transcription_enabled and CFG.listen_gate_enabled:
+        _buf = media_stream.get_buffer(call_sid)
+        if _buf.is_speaking(CFG.listen_quiet_seconds) and rec.speaking_deferrals < CFG.listen_max_defers:
+            # A deferred turn is not a "listen": several early-resolution rules
+            # count turns ("heard at least 2 turns before trusting answered"),
+            # so a 2s deferral must not satisfy them on a greeting that has not
+            # finished.
+            STORE.update(call_sid, speaking_deferrals=rec.speaking_deferrals + 1,
+                         gather_count=max(0, rec.gather_count - 1))
+            log.info("IVR turn deferred (far end still speaking) call_sid=%s stage=%s defers=%d",
+                     call_sid, stage, rec.speaking_deferrals + 1)
+            return _twiml(_gather(stage, level, CFG.listen_recheck_seconds))
+        if rec.speaking_deferrals:
+            STORE.update(call_sid, speaking_deferrals=0)
 
     # NOTE: there used to be a step 2 here -- "AMD said human, no menu yet,
     # no digits pressed -> trust it and resolve immediately." Removed
@@ -1038,6 +1108,16 @@ def ivr_turn(stage: str, level: int) -> Response:
                                decision.flagged, decision.reasoning,
                                is_emergency_route=decision.is_emergency_route)
             STORE.update(call_sid, phase="navigating")
+            # Timing evidence for every press: how long after answer, and how
+            # long the far end had been silent. Written to the Calls notes so
+            # a press that lands mid-prompt (or one the far end hangs up on)
+            # is visible in the Sheet instead of having to be inferred.
+            _pbuf = media_stream.peek_buffer(call_sid)
+            _q = _pbuf.quiet_for() if _pbuf is not None else None
+            _diag = (f"press {decision.digit} @+{STORE.seconds_since_answered(call_sid):.0f}s, "
+                     f"far end quiet {'n/a' if _q is None else f'{_q:.1f}s'}"
+                     f"{', interim pending' if _pbuf is not None and _pbuf.has_interim() else ''}")
+            STORE.update(call_sid, press_diag=(rec.press_diag + "; " if rec.press_diag else "") + _diag)
             log.info(
                 "IVR press call_sid=%s digit=%s classifier=%s flagged=%s (%s)",
                 call_sid, decision.digit, decision.classifier, decision.flagged, decision.reasoning,
@@ -1077,7 +1157,10 @@ def ivr_turn(stage: str, level: int) -> Response:
     # Not (yet) a menu (or a vetoed false-positive), not gatekeeping, not alt-contact.
     if empty:
         return _conclude_not_menu(call_sid, rec)
-    if rec.gather_count >= CFG.ivr_max_gather_cycles:
+    # Cycle-count guard only -- the time-based budget above is the real cap.
+    # Deferred turns and the longer hold budget both add cycles, so the count
+    # limit is scaled to the hard cap (2s is the shortest cycle we ever use).
+    if rec.gather_count >= max(CFG.ivr_max_gather_cycles, CFG.ivr_hard_cap_seconds // 2):
         log.info("IVR gather cap reached call_sid=%s; concluding not-a-menu", call_sid)
         return _conclude_not_menu(call_sid, rec)
 
@@ -1207,7 +1290,7 @@ def _ivr_tail(call_sid: str, rec) -> Response:
     # reached by exhausting the master timer with no real resolution.
     tail_class = ivr.classify_tail(tail) if tail else "unknown"
     conclusive = tail_class in ("answered", "voicemail")
-    over_budget = STORE.seconds_since_answered(call_sid) >= CFG.ivr_master_timeout_seconds - 3
+    over_budget = _budget_exhausted(call_sid, rec, margin=3)
     if conclusive:
         _resolve(call_sid)
         return _twiml("<Hangup/>")

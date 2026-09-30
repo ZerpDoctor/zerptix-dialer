@@ -146,6 +146,25 @@ class Config:
     # confirm -- deliberately much shorter than ivr_tail_gather_seconds so a
     # real person isn't left in dead air for that long (see ivr_turn's
     # gather_count==1 fast-confirm branch in server.py).
+    # "Listen like a human": never decide (press a digit, resolve, hang up)
+    # while the far end is still mid-speech. Deepgram interim/final results
+    # arrive continuously while someone is talking, so "no transcript
+    # activity for listen_quiet_seconds" is the end-of-speech signal the
+    # SignalWire Gather used to provide before the Deepgram migration
+    # dropped speechTimeout="auto". A turn that lands mid-speech is deferred
+    # (re-checked after listen_recheck_seconds), at most listen_max_defers
+    # times in a row so a looping menu can't defer forever.
+    listen_gate_enabled: bool = True   # kill switch
+    listen_quiet_seconds: float = 1.2
+    listen_max_defers: int = 4
+    listen_recheck_seconds: int = 2
+    # Hold budget: ivr_hold_budget_seconds is counted from the LAST digit
+    # press (or from answer if none was pressed), so time spent in menus no
+    # longer eats the wait for a person. ivr_master_timeout_seconds remains
+    # the floor; ivr_hard_cap_seconds is the absolute ceiling and must stay
+    # under the scheduler's pool wait backstop (150s).
+    ivr_hold_budget_seconds: int = 60
+    ivr_hard_cap_seconds: int = 110
     gatekeeping_detection_enabled: bool = True  # kill switch, independent of IVR_ENABLED
 
     # Scheduler / Sheet-as-queue (spec section 7)
@@ -287,6 +306,12 @@ def load() -> Config:
         ivr_initial_timeout_seconds=int(_get("IVR_INITIAL_TIMEOUT_SECONDS", "5") or "5"),
         ivr_tail_gather_seconds=int(_get("IVR_TAIL_GATHER_SECONDS", "4") or "4"),
         ivr_confirm_gather_seconds=int(_get("IVR_CONFIRM_GATHER_SECONDS", "7") or "7"),
+        listen_gate_enabled=_bool("LISTEN_GATE_ENABLED", True),
+        listen_quiet_seconds=float(_get("LISTEN_QUIET_SECONDS", "1.2") or "1.2"),
+        listen_max_defers=int(_get("LISTEN_MAX_DEFERS", "4") or "4"),
+        listen_recheck_seconds=int(_get("LISTEN_RECHECK_SECONDS", "2") or "2"),
+        ivr_hold_budget_seconds=int(_get("IVR_HOLD_BUDGET_SECONDS", "60") or "60"),
+        ivr_hard_cap_seconds=int(_get("IVR_HARD_CAP_SECONDS", "110") or "110"),
         gatekeeping_detection_enabled=_bool("GATEKEEPING_DETECTION_ENABLED", True),
         sched_queue_tab=_get("SCHED_QUEUE_TAB", "Queue"),
         sched_sim_queue_tab=_get("SCHED_SIM_QUEUE_TAB", "Queue_SIM"),
