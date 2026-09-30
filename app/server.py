@@ -34,6 +34,7 @@ from twilio.request_validator import RequestValidator
 from .config import CFG
 from .call_store import STORE
 from . import outcomes
+from . import email_safety
 from . import google_sheets
 from . import ivr
 from . import media_stream
@@ -522,7 +523,7 @@ def _build_row(rec, outcome: str, note: str) -> dict:
         company_name = queue_row.company_name if queue_row is not None else ""
         tz_name = queue_row.timezone if queue_row is not None else ""
     logged_at_date, logged_at_time = _format_local(now_utc, tz_name)
-    return {
+    row = {
         "company_name": company_name,
         "logged_at_iso": now_utc.isoformat(),
         "logged_at_date": logged_at_date,
@@ -547,8 +548,9 @@ def _build_row(rec, outcome: str, note: str) -> dict:
             "true" if rec.emergency_route
             else "false" if rec.ivr_detected
             else "not_applicable"
-        ),
-    }
+        ),    }
+    row["email_safe"], row["email_safe_reason"] = email_safety.assess(row)
+    return row
 
 
 def _update_queue_row(rec, outcome: str) -> None:

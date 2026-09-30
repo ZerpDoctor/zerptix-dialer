@@ -76,6 +76,12 @@ HEADER = [
     # not_applicable means no IVR menu was involved at all (plain pickup or a
     # voicemail with no menu). See ivr.Decision.is_emergency_route.
     "routed_to_emergency_line",
+    # Appended at the END 2026-09-30, same no-shift reasoning as above. Whether
+    # this row may be used to tell a company "we called and ...": yes / review /
+    # no, plus the reason -- see app/email_safety.py. Mail-merge from
+    # email_safe = yes only.
+    "email_safe",
+    "email_safe_reason",
 ]
 
 
