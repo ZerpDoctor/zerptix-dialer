@@ -195,6 +195,17 @@ def media_stream_ws(ws, call_sid: str) -> None:
         log.error("media_stream_ws route CRASHED for call_sid=%s: %s", call_sid, e, exc_info=True)
 
 
+def _trace(call_sid: str, rec, code: str, buf=None) -> None:
+    """Append one compact entry to this call's turn trace: code@seconds-in/far-end-quiet.
+    Written to the Calls notes for any call that pressed a digit, so press timing
+    can be read from the Sheet instead of inferred."""
+    if len(rec.turn_trace) > 700:
+        return
+    q = buf.quiet_for() if buf is not None else None
+    entry = f"{code}@{STORE.seconds_since_answered(call_sid):.0f}" + ("" if q is None else f"/q{q:.1f}")
+    STORE.update(call_sid, turn_trace=(rec.turn_trace + " " + entry).strip())
+
+
 def _stream_problem(call_sid: str, rec, buf) -> str | None:
     """Why this call's media stream needs restarting, or None if it looks fine.
     Never connected, or stopped sending audio. Real blank-transcript calls
@@ -525,6 +536,8 @@ def _build_row(rec, outcome: str, note: str) -> dict:
         notes.append(f"alt_contact: {rec.alt_contact_reasoning}")
     if rec.press_diag:
         notes.append(f"diag: {rec.press_diag}")
+    if rec.turn_trace and rec.digits_sent:
+        notes.append(f"trace: {rec.turn_trace}")
     if outcome in ("unknown", "ivr_unresolved") or not rec.transcript_accum.strip():
         _sbuf = media_stream.peek_buffer(rec.call_sid)
         if _sbuf is not None:
@@ -958,9 +971,12 @@ def ivr_turn(stage: str, level: int) -> Response:
         # A menu that has already been read through twice is complete and
         # looping (911 Restoration repeated "press one for the next available
         # representative" for ~27s before we pressed): nothing left to wait for.
-        _looping = stage == "menu" and ivr.menu_repeats(rec.transcript_accum[rec.transcript_at_last_digit:])
+        _seg = rec.transcript_accum[rec.transcript_at_last_digit:]
+        _looping = stage == "menu" and ivr.menu_repeats(_seg)
+        _cap = CFG.listen_menu_max_defers if (stage == "menu" and ivr.parse_options(_seg)) else CFG.listen_max_defers
         if (_buf.is_speaking(CFG.listen_quiet_seconds) and not _looping
-                and rec.speaking_deferrals < CFG.listen_max_defers):
+                and rec.speaking_deferrals < _cap):
+            _trace(call_sid, rec, "D", _buf)
             # A deferred turn is not a "listen": several early-resolution rules
             # count turns ("heard at least 2 turns before trusting answered"),
             # so a 2s deferral must not satisfy them on a greeting that has not
@@ -1159,6 +1175,7 @@ def ivr_turn(stage: str, level: int) -> Response:
                     and rec.press_waits < CFG.listen_press_max_waits):
                 STORE.update(call_sid, press_waits=rec.press_waits + 1,
                              gather_count=max(0, rec.gather_count - 1))
+                _trace(call_sid, rec, "W", media_stream.get_buffer(call_sid))
                 return _twiml(_gather(stage, level, 1))
         if rec.press_waits:
             STORE.update(call_sid, press_waits=0)
@@ -1186,6 +1203,7 @@ def ivr_turn(stage: str, level: int) -> Response:
                      f"far end quiet {'n/a' if _q is None else f'{_q:.1f}s'}"
                      f"{', interim pending' if _pbuf is not None and _pbuf.has_interim() else ''}")
             STORE.update(call_sid, press_diag=(rec.press_diag + "; " if rec.press_diag else "") + _diag)
+            _trace(call_sid, rec, "P" + str(decision.digit), _pbuf)
             log.info(
                 "IVR press call_sid=%s digit=%s classifier=%s flagged=%s (%s)",
                 call_sid, decision.digit, decision.classifier, decision.flagged, decision.reasoning,

@@ -156,8 +156,13 @@ class Config:
     # times in a row so a looping menu can't defer forever.
     listen_gate_enabled: bool = True   # kill switch
     listen_quiet_seconds: float = 1.2
-    listen_max_defers: int = 4
-    listen_recheck_seconds: int = 2
+    listen_max_defers: int = 10
+    # While a menu is being read, allow far more deferrals: a 25-30s prompt must
+    # not make the gate fail open and press before the last option is heard.
+    listen_menu_max_defers: int = 30
+    # 1s (was 2s): a phone system only waits ~3-5s for input after its prompt,
+    # so a 2s recheck could land after the window had closed.
+    listen_recheck_seconds: int = 1
     # Pressing a digit needs a longer silence than merely "not mid-word": the
     # menu must be over. 2.0s of quiet, or the menu repeating, then press.
     # (Phone systems only wait ~3-5s for input after a prompt; 2026-09-30's
@@ -337,8 +342,9 @@ def load() -> Config:
         ivr_confirm_gather_seconds=int(_get("IVR_CONFIRM_GATHER_SECONDS", "7") or "7"),
         listen_gate_enabled=_bool("LISTEN_GATE_ENABLED", True),
         listen_quiet_seconds=float(_get("LISTEN_QUIET_SECONDS", "1.2") or "1.2"),
-        listen_max_defers=int(_get("LISTEN_MAX_DEFERS", "4") or "4"),
-        listen_recheck_seconds=int(_get("LISTEN_RECHECK_SECONDS", "2") or "2"),
+        listen_max_defers=int(_get("LISTEN_MAX_DEFERS", "10") or "10"),
+        listen_menu_max_defers=int(_get("LISTEN_MENU_MAX_DEFERS", "30") or "30"),
+        listen_recheck_seconds=int(_get("LISTEN_RECHECK_SECONDS", "1") or "1"),
         listen_press_quiet_seconds=float(_get("LISTEN_PRESS_QUIET_SECONDS", "2.0") or "2.0"),
         listen_press_max_waits=int(_get("LISTEN_PRESS_MAX_WAITS", "6") or "6"),
         stream_restart_enabled=_bool("STREAM_RESTART_ENABLED", True),

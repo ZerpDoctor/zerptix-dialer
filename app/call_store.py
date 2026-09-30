@@ -51,6 +51,7 @@ class CallRecord:
     # so decide_digit() never even ran once, despite hearing a clear "press
     # one for..." option four separate times. Capped in ivr_turn so a
     # looping menu can't defer forever; reset alongside the fields above.
+    turn_trace: str = ""                # compact per-turn log (D=deferred, W=waiting to press, P=pressed)
     press_waits: int = 0                # turns spent waiting for the far end to be quiet
     # long enough to press (CFG.listen_press_quiet_seconds); reset on a press
     stream_restarts: int = 0            # times the media stream was restarted mid-call

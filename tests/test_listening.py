@@ -243,6 +243,15 @@ class QuickDigitTests(unittest.TestCase):
         self.assertEqual(self.q("Welcome to Property Craft. Press one to speak to our representative."), "1")
         self.assertEqual(self.q("Press one for the next available customer service representative."), "1")  # 911
 
+    def test_a_menu_that_has_already_looped_is_still_quick(self):
+        """911 Restoration Dallas: after one full play, the option's label ran on into
+        'this call may be recorded' and the word 'record' blocked the rule."""
+        t = ("One one restoration. Call may be recorded for quality assurance. Press one for the next available "
+             "customer service representative. Thank you. Thank you for calling nine one one Restoration. "
+             "This call may be recorded for quality assurance. Press one for the next available customer "
+             "service representative. Thank you.")
+        self.assertEqual(self.q(t), "1")
+
     def test_a_spoken_seven_is_not_a_menu_option(self):
         """S And S Repair: 'available twenty four seven to assist you' parsed as option 7."""
         t = ("We are available twenty four seven to assist you. If this is an emergency and you require "
@@ -303,6 +312,31 @@ class StreamRecoveryTests(ListeningBase):
         for _ in range(CFG.stream_max_restarts + 3):
             c.turn()
         self.assertEqual(c.rec.stream_restarts, CFG.stream_max_restarts)
+
+
+class LongMenuTests(ListeningBase):
+    def test_a_long_menu_is_not_pressed_before_it_is_over(self):
+        """A 25-30s prompt must not make the gate fail open (the general cap is
+        10 deferrals) and press an early option before the last one is heard."""
+        c = Call(self.client)
+        c.speak("Press one for sales. Press two for scheduling.")
+        for i in range(CFG.listen_max_defers + 5):       # well past the general cap
+            c.speak(f"Press {i + 3} for department {i}.")
+            c.turn()
+            self.assertEqual(c.rec.digits_sent, [], f"pressed too early on turn {i + 1}")
+
+    def test_the_turn_trace_records_deferrals_waits_and_the_press(self):
+        c = Call(self.client)
+        c.speak("Press one for emergency services. Press two for scheduling.")
+        c.turn()                                   # speaking -> D
+        c.go_quiet(1.5)
+        c.turn()                                   # quiet but < press quiet -> W
+        c.go_quiet(2.6)
+        c.turn()                                   # press -> P1
+        trace = c.rec.turn_trace
+        self.assertIn("D@", trace)
+        self.assertIn("W@", trace)
+        self.assertIn("P1@", trace)
 
 
 class EmergencyFlagTests(unittest.TestCase):

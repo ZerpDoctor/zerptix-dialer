@@ -723,6 +723,19 @@ def menu_repeats(transcript: str) -> bool:
     return any(n >= 2 for n in opts.values())
 
 
+def _option_sentence(t: str, digit: str) -> str:
+    """The sentence that contains this digit's "press N" -- NOT the option's whole
+    label, which on a menu that has already looped runs on into the next play's
+    "this call may be recorded..." (whose word "record" made the Dallas 911
+    menu look like a voicemail option on 2026-09-30)."""
+    for m in _OPT_ANCHOR.finditer(t):
+        if m.group("d1") and _norm_digit(m.group("d1")) == digit:
+            start = max(t.rfind(".", 0, m.start()), t.rfind("?", 0, m.start()), t.rfind("!", 0, m.start())) + 1
+            ends = [i for i in (t.find(c, m.end()) for c in ".?!") if i >= 0]
+            return t[start:(min(ends) if ends else len(t))]
+    return ""
+
+
 def quick_digit(transcript: str) -> tuple[str, str, bool] | None:
     """(digit, reason, is_emergency) when the choice needs no model, else None.
 
@@ -746,17 +759,15 @@ def quick_digit(transcript: str) -> tuple[str, str, bool] | None:
     options = [(d, lab) for d, lab in parse_options(t) if d in press_digits]
     if not options:
         return None
-    before = dict(_before_labels(t))
-    for digit, label in options:
+    for digit, _label in options:
         if option_is_emergency(t, digit):
-            text = f"{label} {before.get(digit, '')}"
-            if any(w in text for w in _NOT_A_LIVE_OPTION):
+            if any(w in _option_sentence(t, digit) for w in _NOT_A_LIVE_OPTION):
                 return None          # "press 2 to leave an emergency message" is not the live line
             return digit, f"the menu names {digit} as its emergency option", True
     if len(options) == 1:
-        digit, label = options[0]
-        text = f"{label} {before.get(digit, '')}"
-        if any(w in text for w in _CONNECT_WORDS) and not any(w in text for w in _NOT_A_LIVE_OPTION):
+        digit = options[0][0]
+        sent = _option_sentence(t, digit)
+        if any(w in sent for w in _CONNECT_WORDS) and not any(w in sent for w in _NOT_A_LIVE_OPTION):
             return digit, f"the only option, {digit}, connects to a person", False
     return None
 
