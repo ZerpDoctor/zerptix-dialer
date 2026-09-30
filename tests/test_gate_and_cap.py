@@ -274,5 +274,27 @@ class TimezoneFairness(CapTestCase):
         self.assertEqual(got.get("New_York"), 25, "Eastern's share is a quarter, not a sixth")
 
 
+class RecordingGuard(CapTestCase):
+    """RECORD_CALLS was switched on for testing (2026-09-30) and must not be
+    forgotten: every real call placed while it is on raises an alert."""
+
+    def run_with(self, record_on):
+        from app import alerts
+        sent, orig, cfg = [], alerts.send, CFG.record_calls
+        alerts.send = lambda title, detail="", **k: sent.append(title)
+        CFG.record_calls = record_on
+        try:
+            self.tick(MemoryQueue(make_rows("America/New_York", 5, "NY")), ET, [])
+        finally:
+            alerts.send, CFG.record_calls = orig, cfg
+        return sent
+
+    def test_alerts_when_real_calls_go_out_with_recording_on(self):
+        self.assertIn("Recording is ON for real prospect calls", self.run_with(True))
+
+    def test_silent_when_recording_is_off(self):
+        self.assertNotIn("Recording is ON for real prospect calls", self.run_with(False))
+
+
 if __name__ == "__main__":
     unittest.main()

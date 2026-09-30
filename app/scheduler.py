@@ -578,6 +578,15 @@ def tick(now_utc: datetime | None = None, *, queue=None, dialer=None,
     if not dry_run:
         _pool_dial_counts = pool_counts
         _pool_rr_index = rr_index
+        # Recording was switched on for testing (2026-09-30) and is meant to be
+        # turned back off afterwards -- it costs money and, for real prospect
+        # calls, raises an all-party-consent question. Say so whenever a real
+        # call actually goes out while it is on (repeats suppressed 30 min).
+        if CFG.record_calls and any(d.action == "dialed" for d in out):
+            from . import alerts
+            alerts.send("Recording is ON for real prospect calls",
+                        "RECORD_CALLS=true -- every call placed is being recorded. Turn it off after testing "
+                        "(cost, and all-party-consent states).", level="WARN", key="recording-on")
 
     return out
 
