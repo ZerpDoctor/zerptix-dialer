@@ -60,7 +60,10 @@ _MENU_PHRASES = [
 ]
 
 _EMERGENCY_WORDS = [
-    "emergency", "urgent", "after hours", "after-hours", "afterhours", "24 hour",
+    # Stem, not the word: speech-to-text renders it "emergency", "emergencies" and
+    # "emergent" ("Press one for emergent services", SERVPRO East Nashville,
+    # 2026-09-30, sent the rule to the model and the press out at +38s).
+    "emergen", "urgent", "after hours", "after-hours", "afterhours", "24 hour",
     "24-hour", "24/7", "on call", "on-call", "immediate assistance", "no heat",
     "no water", "gas leak", "no cooling", "outage",
 ]
@@ -627,7 +630,7 @@ def parse_options(transcript: str) -> list[tuple[str, str]]:
 
 # --- keyword-priority digit selection --------------------------------------
 
-_NEGATED_EMERGENCY = re.compile(r"\b(non[- ]?emergency|not an emergency|not urgent|non[- ]?urgent)\b")
+_NEGATED_EMERGENCY = re.compile(r"\b(non[- ]?emergen\w*|not an emergency|not urgent|non[- ]?urgent)\b")
 
 
 def _before_labels(t: str) -> list[tuple[str, str]]:
@@ -686,7 +689,10 @@ def choose_digit_by_priority(transcript: str) -> DigitPick:
     # please press one. For billing... press two. For all other needs,
     # press zero.") picked 0 -- the emergency option was never seen as such;
     # Serviclean pressed the right digit by luck but flagged it non-emergency.
+    after = dict(options)
     for digit, before in _before_labels(t):
+        if _is_message_option(after.get(digit, "")):
+            continue     # "press 9 to leave a message" is never the live line, whatever text precedes it
         if any(w in before for w in _EMERGENCY_WORDS) and not _NEGATED_EMERGENCY.search(before):
             return DigitPick(digit, f"emergency/after-hours option, described before its digit ('{before.strip()}')",
                               True, is_emergency=True)
@@ -795,10 +801,24 @@ def option_is_emergency(transcript: str, digit: str | None) -> bool:
     for d, label in parse_options(t):
         if d == digit and any(w in label for w in _EMERGENCY_WORDS) and not _NEGATED_EMERGENCY.search(label):
             return True
+    after = dict(parse_options(t))
     for d, before in _before_labels(t):
-        if d == digit and any(w in before for w in _EMERGENCY_WORDS) and not _NEGATED_EMERGENCY.search(before):
+        if (d == digit and not _is_message_option(after.get(d, ""))
+                and any(w in before for w in _EMERGENCY_WORDS) and not _NEGATED_EMERGENCY.search(before)):
             return True
     return False
+
+
+def _is_message_option(label: str) -> bool:
+    """An option that records a message / goes to voicemail is never the live line."""
+    # Only the first few words: an option's label can run on into the NEXT
+    # option's description ("press 1 ... For all other calls and to leave a
+    # voicemail press 2"), but an option that leaves a message says so at once
+    # ("press 9 to leave a message").
+    words = (label or "").split()
+    if "leave" in words[:2] or "record" in words[:2]:
+        return True                       # "to leave a message", "to leave an emergency message"
+    return any(w in " ".join(words[:4]) for w in ("message", "voicemail", "voice mail", "mailbox"))
 
 
 def _digit_sort_key(d: str) -> tuple[int, str]:

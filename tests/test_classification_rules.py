@@ -167,6 +167,36 @@ class Routing(Base):
         self.assertEqual(ivr.choose_digit_by_priority(JOHNSTON).digit, "1", "outage fallback pressed 0 before")
 
 
+class EmergencyVocabulary(Base):
+    """Speech-to-text renders the word as emergency / emergencies / emergent."""
+
+    def test_stem_variants_are_recognised(self):
+        for word in ("emergency", "emergencies", "emergent"):
+            with self.subTest(word):
+                t = f"Please listen carefully. Press one for {word} services. Press two to speak with our office staff."
+                q = ivr.quick_digit(t)
+                self.assertEqual(q and q[0], "1")
+
+    def test_a_voicemail_option_is_never_chosen_as_the_emergency_one(self):
+        """R And S Restores: 'for water damage emergencies please dial 200 to dial by name press 9
+        to leave a message dial zero...' -- widening the vocabulary must not send the
+        fallback to the message option."""
+        t = ("you've reached restores for water damage emergencies please dial 200 to dial by name "
+             "press 9 to leave a message dial zero and someone will return your call")
+        self.assertNotEqual(ivr.choose_digit_by_priority(t).digit, "9")
+        self.assertFalse(ivr.option_is_emergency(t, "9"))
+
+    def test_an_otherwise_clause_does_not_disqualify_the_emergency_option(self):
+        """Lanier: 'after hours emergency please press 4 otherwise please leave a detailed message'."""
+        t = ("Experiencing an after hours emergency, please press 4. Otherwise, please leave a detailed "
+             "message with your name.")
+        self.assertEqual(ivr.quick_digit(t), ("4", "the menu names 4 as its emergency option", True))
+
+    def test_non_emergency_variants_are_not_emergencies(self):
+        t = "Press one for non-emergent inquiries. Press two for billing."
+        self.assertFalse(ivr.option_is_emergency(t, "1"))
+
+
 class Outcomes(Base):
     """server._compute_outcome on a reconstructed call record."""
 
