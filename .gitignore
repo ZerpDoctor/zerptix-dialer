@@ -15,3 +15,8 @@ srv.err
 desktop.ini
 .claude/
 audit_data.txt
+
+# golden replay fixtures contain real call transcripts, company names and phone numbers -- local only
+tests/golden/cases.json
+tests/golden/haiku_cache.json
+tests/golden/baseline.json
