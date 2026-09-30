@@ -411,6 +411,11 @@ def _compute_outcome(rec) -> tuple[str, str]:
             if gk.is_gatekeeping and not gk.has_digit_option:
                 return "gatekeeping_miss", f"gatekeeping detected in final transcript but call ended before this was caught live: {gk.reasoning}"
 
+    if decision.classifier == "menu_start" and not rec.ivr_detected:
+        # Only the start of an automated greeting/menu was ever heard -- see
+        # ivr.menu_start_reason. Inconclusive, but not "unknown nothing".
+        return "ivr_unresolved", note
+
     if not confident and not rec.ivr_detected and ivr.parse_options(transcript):
         # Real incident 2026-09-28 (Paul Davis Restoration): the far end hung
         # up right after playing its full menu, before any /ivr/turn ever got

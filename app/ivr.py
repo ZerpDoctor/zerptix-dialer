@@ -353,10 +353,33 @@ class DigitPick:
 
 # --- menu detection ------------------------------------------------------------
 
+_VERIFY_HUMAN = re.compile(r"\b(verif\w*|confirm|prove)\b[^.?!]{0,30}\b(human|person|robot)\b", re.I)
+_VERIFY_PRESS = re.compile(
+    r"\b(?:pressing|press|enter|dial)\s+(?:the\s+)?(?:number\s+)?(" + _DIGIT_TOKEN + r")\b", re.I)
+
+
+def human_verification_digit(transcript: str) -> str | None:
+    """The digit a call-screening "verify you are human" prompt asks for, else
+    None. Real incident 2026-09-29: Rapid Response Restoration's line plays
+    "The owner of this phone number has enabled automatic spam blocking. To
+    continue, please verify your human by pressing zero." on a loop; nothing
+    in looks_like_menu's scoring matches that wording, so no digit was ever
+    considered and the call ran out the clock as extended_hold. The prompt
+    and its digit must be in the same sentence."""
+    for sent in re.split(r"[.?!]", (transcript or "").lower()):
+        if _VERIFY_HUMAN.search(sent):
+            m = _VERIFY_PRESS.search(sent)
+            if m:
+                return _norm_digit(m.group(1))
+    return None
+
+
 def looks_like_menu(transcript: str) -> MenuLook:
     t = (transcript or "").lower()
     if not t.strip():
         return MenuLook(False, 0, [])
+    if human_verification_digit(t):
+        return MenuLook(True, 99, ["human-verification-screen"])
 
     # Never treat a voicemail box's own recording-control menu as a
     # navigable business IVR, even though it structurally matches
@@ -658,6 +681,10 @@ def decide_digit(transcript: str) -> Decision:
     numbered options with no clear emergency/after-hours instruction, or any
     time keyword priority (not Haiku) chose the digit.
     """
+    screen_digit = human_verification_digit(transcript)
+    if screen_digit:
+        return Decision(True, screen_digit, "keyword", False,
+                        f"call-screening prompt asks to verify human by pressing {screen_digit}")
     keyword_look = looks_like_menu(transcript)
     options = parse_options(transcript)
     has_emergency = any(w in transcript.lower() for w in _EMERGENCY_WORDS)
@@ -785,6 +812,53 @@ def classify_tail(tail_transcript: str) -> str:
     return "unknown"
 
 
+_OPENER_THANKS = re.compile(r"^(thank you for calling|thanks for calling|welcome to)\b")
+_OPENER_RECORDED = re.compile(r"\bcalls?\b.*\b(recorded|monitored)\b")
+_DANGLING_START = re.compile(r"^(if|for|to|press|when|otherwise)\b")
+_DANGLING_MENUISH = re.compile(
+    r"\b(press|emergency|urgent|option|extension|menu|department|representative|speak|"
+    r"schedule|appointment|payment|billing|claims|sales|quote|dispatch|reach|accounts|payable)\b", re.I)
+# A cut-off fragment about leaving a message is far likelier a voicemail
+# greeting than a menu (Precision Structures: "If you would, please leave
+# your name,").
+_DANGLING_VOICEMAILISH = re.compile(r"\b(leave|record|recording|message|voicemail|mailbox)\b", re.I)
+
+
+def menu_start_reason(transcript: str) -> str | None:
+    """Why this transcript is only the START of an automated greeting/menu, not
+    an outcome -- or None. Two shapes, both real incidents 2026-09-29:
+
+    1. Nothing but "Thank you for calling <name>" plus a recording disclosure
+       (DriForce Property Restoration, Boston Harbor Water Restoration): a
+       canned recorded opener, no interaction. A bare name after a disclosure
+       with no "thank you for calling" ("This call may be recorded. ABR.") is
+       NOT this shape and still reads as a person.
+    2. The transcript ends mid-sentence on menu wording ("...If this call is
+       about an emergency loss," -- On Site Specialty; "...To make a payment,
+       press th" -- Pro Services): the menu was cut off, so whatever it goes
+       on to offer is unknown. Skipped when the transcript already carries a
+       strong voicemail identity, where a cut-off tail is just a long message."""
+    t = (transcript or "").lower().strip()
+    # Sentence boundaries are the whole basis for both shapes, and only the
+    # Deepgram-era transcripts carry punctuation (periods or commas); an unpunctuated one is a
+    # single run-on "sentence" that would match either shape by accident.
+    if not t or not re.search(r"[.?!,]", t):
+        return None
+    sents = [x.strip() for x in re.split(r"[.?!]", t) if x.strip()]
+    if (sents and "?" not in t and len(t.split()) <= 30
+            and any(_OPENER_THANKS.match(x) for x in sents)
+            and any(_OPENER_RECORDED.search(x) for x in sents)
+            and all(_OPENER_THANKS.match(x) or _OPENER_RECORDED.search(x) for x in sents)):
+        return "automated greeting start (thank-you opener + recording disclosure only); the rest of the call was not heard"
+    if any(p in t for p in _TAIL_VOICEMAIL_STRONG_IDENTITY) or "beep" in t or "the tone" in t:
+        return None
+    frag = t[max(t.rfind("."), t.rfind("?"), t.rfind("!")) + 1:].strip()
+    if (len(frag.split()) >= 3 and _DANGLING_START.match(frag)
+            and _DANGLING_MENUISH.search(frag) and not _DANGLING_VOICEMAILISH.search(frag)):
+        return f"menu cut off mid-sentence ({frag[-50:]!r}); the options that followed were not heard"
+    return None
+
+
 @dataclass
 class TailDecision:
     outcome: str        # "answered" | "voicemail" | "extended_hold" | "unknown"
@@ -811,6 +885,10 @@ def decide_tail(transcript: str, answered_by: str | None, company_name: str = ""
     bare-name live answer -- see that function's docstring.
     """
     amd_guess = outcomes.from_amd(answered_by)  # "answered" | "voicemail" | None
+
+    ms = menu_start_reason(transcript)
+    if ms:
+        return TailDecision("unknown", "menu_start", ms, False)
 
     def _from_keyword_or_amd(prefix: str) -> TailDecision:
         kw = classify_tail(transcript)
