@@ -342,6 +342,18 @@ def _compute_outcome(rec) -> tuple[str, str]:
 
     if not transcript:
         if rec.ivr_detected:
+            # extended_hold means we waited out the budget (~60s) and nobody
+            # came. A call that ended well short of that with nothing heard
+            # after the press was hung up on by the far end (or dropped) --
+            # we don't know why, so it is unresolved, not a hold. 12 of the
+            # last 20 rows logged this way ended in 17-49s: RestoreCo (19s),
+            # Complete Restoration LLC (29s), Property Craft (30s) on
+            # 2026-09-29. 0.0 means the answered-time is unknown (a rehydrated
+            # record), where the old behavior is kept.
+            elapsed = STORE.seconds_since_answered(rec.call_sid)
+            if 0.0 < elapsed < 50.0:
+                return "ivr_unresolved", (f"call ended {int(elapsed)}s in with nothing heard after the digit press "
+                                          "(not a hold -- the budget was not used); check recording")
             return "extended_hold", "silence after menu navigation (likely on hold / in queue)"
         # AMD alone on a connected call with literally nothing transcribed is
         # the same pure-guess pattern already downgraded at every other
@@ -993,8 +1005,18 @@ def ivr_turn(stage: str, level: int) -> Response:
                     alt_contact.reasoning,
                 )
 
-    if menu_look and (menu_look.is_menu or (gatekeeping and gatekeeping.has_digit_option)
-            or (alt_contact and alt_contact.has_digit_option)):
+    # Once the emergency option has been pressed we are done navigating: what
+    # follows is the answer to that press (a person, hold, voicemail). Real
+    # incidents 2026-09-29 (Rare Restoration 1,2; First Point 0,4; Rocky
+    # Mountain 9,1; Most Wanted 1,2): the rest of the SAME menu prompt kept
+    # arriving after the press, read as a second-level menu, and a second
+    # digit -- never an answer to anything we did -- was pressed on top of a
+    # connection already in progress.
+    already_on_emergency_route = bool(rec.emergency_route and rec.digits_sent)
+
+    if (menu_look and not already_on_emergency_route
+            and (menu_look.is_menu or (gatekeeping and gatekeeping.has_digit_option)
+                 or (alt_contact and alt_contact.has_digit_option))):
         decision = ivr.decide_digit(segment)
 
         if decision.is_menu:
@@ -1146,7 +1168,7 @@ def _conclude_not_menu(call_sid: str, rec) -> Response:
             # trusting a confident-sounding conclusion at that exact moment
             # is the bug, not the confidence itself. Keep listening at
             # least one more cycle instead.
-            if (decision.outcome in ("answered", "voicemail")
+            if (decision.outcome in ("answered", "voicemail", "disconnected")
                     and decision.classifier != "amd_fallback"
                     and not ivr.mentions_incoming_menu(transcript)):
                 _resolve(call_sid)

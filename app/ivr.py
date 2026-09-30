@@ -240,6 +240,13 @@ _ALT_CONTACT_PHRASES = [
     # ("text us at" needs the "at", "please text" needs the "please") and
     # was logged plain voicemail instead of alt_miss.
     "text us",
+    # Call-screening assistants (Google Voice / carrier screening): the owner
+    # hears who is calling before deciding to pick up -- not a voicemail, not
+    # a person. Same alt_miss family as "record your name... I'll see if this
+    # person is available". Real incidents 2026-09-29: Redemption And
+    # Cleaning, The Contents (both logged voicemail).
+    "say who you are and why you", "record your name and reason", "state your name and reason",
+    "i'm a call assistant", "i am a call assistant", "call screening", "screening this call",
     "email us at", "send us an email", "you can email", "email address is",
     "reach us at our email", "for a faster response please email",
     "visit our website", "go to our website", "check out our website",
@@ -504,6 +511,34 @@ class AltContactDecision:
     reasoning: str
 
 
+# "...if it's of an urgent nature, please call seven two zero eight four five
+# two one six four" (Mitigation X, 2026-09-29): a spoken phone number after
+# call/text/dial is a redirect however the sentence is worded. Haiku still
+# makes the actual call; this only decides whether it is consulted.
+_ALT_CALL_VERB = re.compile(r"\b(?:call|text|dial|reach)\s+(?:us\s+|me\s+|him\s+|her\s+|them\s+)?(?:at\s+|on\s+)?")
+_SPOKEN_DIGIT_TOKENS = {"zero", "oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"}
+# A pointer to 911 is boilerplate on many voicemails, not a redirect.
+_EMERGENCY_SERVICES_NUMBER = re.compile(r"\b(911|nine one one)\b")
+
+
+def _spoken_number_after_call_verb(t: str) -> bool:
+    """True if call/text/dial/reach is followed by a run of digits (spoken or
+    numeric) long enough to be a phone number, so menu options like "dial 3"
+    or "press one" never qualify."""
+    for m in _ALT_CALL_VERB.finditer(t):
+        digits = 0
+        for tok in re.findall(r"[a-z]+|\d+", t[m.end():m.end() + 90]):
+            if tok.isdigit():
+                digits += len(tok)
+            elif tok in _SPOKEN_DIGIT_TOKENS:
+                digits += 1
+            else:
+                break
+        if digits >= 7:
+            return True
+    return False
+
+
 def looks_like_alt_contact(transcript: str) -> AltContactLook:
     """Cheap keyword pre-filter, only ever consulted by the caller AFTER
     looks_like_menu() has already said this is NOT a menu -- so a real digit-
@@ -512,6 +547,8 @@ def looks_like_alt_contact(transcript: str) -> AltContactLook:
     if not t.strip():
         return AltContactLook(False, [])
     matched = [p for p in _ALT_CONTACT_PHRASES if p in t]
+    if _spoken_number_after_call_verb(t) and not _EMERGENCY_SERVICES_NUMBER.search(t):
+        matched.append("call/text + phone number")
     return AltContactLook(bool(matched), matched)
 
 
@@ -653,6 +690,22 @@ def choose_digit_by_priority(transcript: str) -> DigitPick:
     return DigitPick(digit, "no emergency/representative option; took lowest offered digit", True)
 
 
+def option_is_emergency(transcript: str, digit: str | None) -> bool:
+    """True if the menu itself describes `digit` as an emergency/after-hours
+    option -- wording after the digit ("press 1 for emergencies") or before
+    it ("For emergency service needs, press one")."""
+    if not digit:
+        return False
+    t = (transcript or "").lower()
+    for d, label in parse_options(t):
+        if d == digit and any(w in label for w in _EMERGENCY_WORDS) and not _NEGATED_EMERGENCY.search(label):
+            return True
+    for d, before in _before_labels(t):
+        if d == digit and any(w in before for w in _EMERGENCY_WORDS) and not _NEGATED_EMERGENCY.search(before):
+            return True
+    return False
+
+
 def _digit_sort_key(d: str) -> tuple[int, str]:
     # numeric first (0-9), then * and # last
     return (0, d) if d.isdigit() else (1, d)
@@ -747,8 +800,13 @@ def decide_digit(transcript: str) -> Decision:
                         f"option (parsed: {sorted(valid_digits)}); {pick.reason}",
                         is_emergency_route=pick.is_emergency)
 
+    # Haiku's own is_emergency_option is judged against "is this a real
+    # emergency tier"; American Restoration's "for emergency water or fire
+    # damage services, please press one" -- pressed correctly -- was reported
+    # false because it is the company's core service. The menu itself calls
+    # that digit the emergency option, so the flag follows the wording.
     return Decision(True, h["digit"], "haiku", ambiguous, f"haiku: {h['reasoning']}",
-                    is_emergency_route=h["is_emergency_option"])
+                    is_emergency_route=h["is_emergency_option"] or option_is_emergency(transcript, h["digit"]))
 
 
 # --- tail classification ----------------------------------------------------
@@ -812,8 +870,21 @@ def classify_tail(tail_transcript: str) -> str:
     return "unknown"
 
 
-_OPENER_THANKS = re.compile(r"^(thank you for calling|thanks for calling|welcome to)\b")
+# Carrier / network recordings for a dead number. Real incident 2026-09-29:
+# Phoenix Contents Restoration ("Welcome to Verizon Wireless. The number you
+# dialed has been changed. Disconnected, or is no longer in service.") was
+# logged voicemail -- the classifier's yes/no fields have no "dead number"
+# option, so it fell into the nearest one.
+_DISCONNECTED_PHRASES = [
+    "no longer in service", "is not in service", "number you dialed has been changed",
+    "has been disconnected", "not a working number", "number you have dialed is not",
+    "cannot be completed as dialed",
+]
+_OPENER_THANKS = re.compile(
+    r"^(thank you for (calling|choosing|contacting|reaching)|thanks for (calling|choosing|contacting)|welcome to)\b")
 _OPENER_RECORDED = re.compile(r"\bcalls?\b.*\b(recorded|monitored)\b")
+# Time-of-day greeting only -- a bare "Hello" is what a live person says.
+_OPENER_GREETING = re.compile(r"^good (morning|afternoon|evening)$")
 _DANGLING_START = re.compile(r"^(if|for|to|press|when|otherwise)\b")
 _DANGLING_MENUISH = re.compile(
     r"\b(press|emergency|urgent|option|extension|menu|department|representative|speak|"
@@ -848,7 +919,8 @@ def menu_start_reason(transcript: str) -> str | None:
     if (sents and "?" not in t and len(t.split()) <= 30
             and any(_OPENER_THANKS.match(x) for x in sents)
             and any(_OPENER_RECORDED.search(x) for x in sents)
-            and all(_OPENER_THANKS.match(x) or _OPENER_RECORDED.search(x) for x in sents)):
+            and all(_OPENER_THANKS.match(x) or _OPENER_RECORDED.search(x) or _OPENER_GREETING.match(x)
+                    for x in sents)):
         return "automated greeting start (thank-you opener + recording disclosure only); the rest of the call was not heard"
     if any(p in t for p in _TAIL_VOICEMAIL_STRONG_IDENTITY) or "beep" in t or "the tone" in t:
         return None
@@ -886,6 +958,10 @@ def decide_tail(transcript: str, answered_by: str | None, company_name: str = ""
     """
     amd_guess = outcomes.from_amd(answered_by)  # "answered" | "voicemail" | None
 
+    low = (transcript or "").lower()
+    if any(p in low for p in _DISCONNECTED_PHRASES):
+        return TailDecision("disconnected", "keyword",
+                            "carrier 'number not in service / disconnected' announcement", False)
     ms = menu_start_reason(transcript)
     if ms:
         return TailDecision("unknown", "menu_start", ms, False)
