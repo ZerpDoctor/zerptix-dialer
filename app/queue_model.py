@@ -133,6 +133,8 @@ class QueueRow:
     @property
     def is_closed(self) -> bool: return _b(self._g("replied_or_closed"))
     @property
+    def email_track(self) -> str: return self._g("email_track")
+    @property
     def attempts(self) -> int:
         try:
             return int(self._g("current_quarter_attempts") or "0")

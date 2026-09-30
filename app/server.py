@@ -221,6 +221,19 @@ def _write_sheet_with_retry(row: dict, attempts: int = 4) -> None:
             delay *= 2
 
 
+def _tail_of(rec) -> str:
+    """The transcript that counts as this call's outcome audio: everything
+    after the last digit press, minus the rest of the menu prompt still
+    arriving at press time (see ivr.post_press_tail). A call with no press
+    uses the whole transcript, unchanged."""
+    full = rec.transcript_accum
+    if rec.ivr_detected:
+        if rec.digits_sent:
+            return ivr.post_press_tail(full, rec.transcript_at_last_digit)
+        return full[rec.transcript_at_last_digit:].strip()
+    return full.strip()
+
+
 def _compute_outcome(rec) -> tuple[str, str]:
     """Return (outcome, note). The transcript is the primary signal for what
     happened on ANY connected call -- not just menu calls -- with AMD only as
@@ -280,10 +293,8 @@ def _compute_outcome(rec) -> tuple[str, str]:
         # ("please leave your name number..."), but hitting the 60s cap right
         # after discarded all of that and returned extended_hold without ever
         # looking at what was actually heard.
-        cap_transcript = (
-            rec.transcript_accum[rec.transcript_at_last_digit:] if rec.ivr_detected
-            else rec.transcript_accum
-        ).strip()
+        cap_transcript = _tail_of(rec)
+        cap_note = ""
         if cap_transcript:
             decision = ivr.decide_tail(cap_transcript, answered_by, rec.company_name)
             # amd_fallback means neither a real keyword match NOR a confident
@@ -315,15 +326,19 @@ def _compute_outcome(rec) -> tuple[str, str]:
                     and not ivr.mentions_incoming_menu(cap_transcript)):
                 note = f"tail: {decision.reasoning}" if decision.reasoning else ""
                 return decision.outcome, note
-        return "extended_hold", "hit 60s master timer with no resolution"
+            # Not confident enough to override the timer -- outcome stays
+            # extended_hold, but keep WHY (e.g. "anthropic unavailable"), which
+            # this line used to discard: 2026-09-29's credit outage left
+            # Restore Pros and Exceptional Restoration as extended_hold with
+            # a note that said nothing about the classifier having been down.
+            if decision.reasoning:
+                cap_note = f"; last tail read: {decision.reasoning}"
+        return "extended_hold", "hit 60s master timer with no resolution" + cap_note
 
     if rec.ivr_detected and not rec.digits_sent:
         return "ivr_unresolved", "menu detected but no digit could be determined; check recording"
 
-    transcript = (
-        rec.transcript_accum[rec.transcript_at_last_digit:] if rec.ivr_detected
-        else rec.transcript_accum
-    ).strip()
+    transcript = _tail_of(rec)
 
     if not transcript:
         if rec.ivr_detected:
@@ -1147,7 +1162,7 @@ def _ivr_tail(call_sid: str, rec) -> Response:
     violated that: it hung up long before the documented 60s budget was used,
     mislabeling calls that were still genuinely on hold as extended_hold based
     on 10 seconds of silence, not 60. Removed."""
-    tail = rec.transcript_accum[rec.transcript_at_last_digit:].strip()
+    tail = _tail_of(rec)
     STORE.bump_tail(call_sid)
     # Only answered/voicemail are genuinely terminal from a keyword match --
     # hearing hold language ("will be with you momentarily") is current

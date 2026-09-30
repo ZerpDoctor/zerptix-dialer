@@ -235,6 +235,11 @@ _ALT_CONTACT_PHRASES = [
     # phone-redirect broadening two nights ago: stop chasing exact wordings,
     # widen to the shorter fragment that actually generalizes.
     "send a text", "text message to", "to the same number",
+    # Added 2026-09-29: Tropical Restoration's voicemail ("If it's an
+    # emergency, text us. Nine five four ...") matched none of the above
+    # ("text us at" needs the "at", "please text" needs the "please") and
+    # was logged plain voicemail instead of alt_miss.
+    "text us",
     "email us at", "send us an email", "you can email", "email address is",
     "reach us at our email", "for a faster response please email",
     "visit our website", "go to our website", "check out our website",
@@ -545,6 +550,44 @@ def parse_options(transcript: str) -> list[tuple[str, str]]:
 
 # --- keyword-priority digit selection --------------------------------------
 
+_NEGATED_EMERGENCY = re.compile(r"\b(non[- ]?emergency|not an emergency|not urgent|non[- ]?urgent)\b")
+
+
+def _before_labels(t: str) -> list[tuple[str, str]]:
+    """[(digit, text-before-its-anchor), ...] for menus worded "For X, press N".
+
+    Only the sentence immediately preceding an anchor counts, and only when
+    it really is that option's own lead-in: text before the first anchor, or
+    text after a sentence terminator that follows the previous anchor. Text
+    that runs straight on from the previous anchor ("press one for
+    emergencies, press two") belongs to the PREVIOUS option (the after-label
+    parse_options already returns) and is deliberately not reused here."""
+    anchors = list(_OPT_ANCHOR.finditer(t))
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for i, m in enumerate(anchors):
+        digit = _norm_digit(m.group("d1") or m.group("d2") or "")
+        if not digit or digit in seen:
+            continue
+        seen.add(digit)
+        start = anchors[i - 1].end() if i else 0
+        seg = t[start:m.start()]
+        if i:
+            stripped = seg.lstrip()
+            if not stripped or stripped[0] not in ".?!":
+                continue
+        # Lead-in = text after the LAST sentence terminator, i.e. the same
+        # sentence as the anchor -- a complete earlier sentence (a greeting
+        # that happens to contain the company's own name, "Thank you for
+        # calling Emergency Water Damage.") is not this option's description.
+        # Capped to the ~90 chars nearest the digit for the same reason,
+        # since transcripts often carry no punctuation at all.
+        cut = max(seg.rfind("."), seg.rfind("?"), seg.rfind("!"))
+        before = seg[cut + 1:].strip(" ,;:-")[-90:]
+        if before:
+            out.append((digit, before))
+    return out
+
 def choose_digit_by_priority(transcript: str) -> DigitPick:
     """Spec section 4 fallback. Always `flagged=True` -- this path only runs when
     Haiku is unavailable or the menu was ambiguous."""
@@ -559,6 +602,17 @@ def choose_digit_by_priority(transcript: str) -> DigitPick:
         if any(w in label for w in _EMERGENCY_WORDS):
             return DigitPick(digit, f"emergency/after-hours option ('{label.strip()}')", True,
                               is_emergency=True)
+    # 1b. "For X, press N" wording puts the description BEFORE its digit, the
+    # opposite of what parse_options' labels assume. Real incidents
+    # 2026-09-29 (Anthropic outage, fallback active): Johnston Restoration
+    # ("For emergency service needs or twenty four hour response time,
+    # please press one. For billing... press two. For all other needs,
+    # press zero.") picked 0 -- the emergency option was never seen as such;
+    # Serviclean pressed the right digit by luck but flagged it non-emergency.
+    for digit, before in _before_labels(t):
+        if any(w in before for w in _EMERGENCY_WORDS) and not _NEGATED_EMERGENCY.search(before):
+            return DigitPick(digit, f"emergency/after-hours option, described before its digit ('{before.strip()}')",
+                              True, is_emergency=True)
     if any(w in t for w in _EMERGENCY_WORDS):
         # Emergency language present but not clearly tied to one option -> lowest.
         # is_emergency stays False -- the digit actually pressed is NOT confirmed
@@ -671,6 +725,45 @@ def decide_digit(transcript: str) -> Decision:
 
 
 # --- tail classification ----------------------------------------------------
+
+_MENU_LEAD = re.compile(
+    r"\b(if you (would like|'d like|wish|want|need)|otherwise|"
+    r"press (one|two|three|four|five|six|seven|eight|nine|zero|star|pound|\d)|"
+    r"for [a-z ]{2,40}, (please )?press)\b", re.I)
+
+
+def post_press_tail(full: str, idx: int) -> str:
+    """The transcript after a digit was pressed, minus the rest of the MENU
+    PROMPT that was still being transcribed when the digit went out.
+
+    The press index is a character offset into a live, lagging transcript,
+    so it often lands mid-prompt and the prompt's remaining sentences arrive
+    in the "post-press" tail. Real incidents 2026-09-29: Greenville
+    Restoration Services (pressed 9 after "...eight AM to five PM," -- the
+    tail was "when we'll be happy to help. If you would like to leave a
+    message,") and Yeti Restoration ("...press zero, to leave a message...")
+    were both logged voicemail from nothing but their own menu's wording,
+    with no post-press audio at all.
+
+    Two conservative steps: (1) if the head ends mid-sentence, drop the rest
+    of that sentence; (2) drop up to three leading sentences that are
+    themselves menu wording (conditional / "press N" phrasing). Stops at the
+    first sentence that isn't."""
+    head, tail = full[:idx], full[idx:]
+    if not head.strip():
+        return tail.strip()
+    if head.rstrip()[-1] not in ".?!":
+        m = re.search(r"[.?!]", tail)
+        if not m:
+            return ""
+        tail = tail[m.end():]
+    parts = [p for p in re.split(r"(?<=[.?!])\s+", tail.strip()) if p]
+    dropped = 0
+    while parts and dropped < 3 and _MENU_LEAD.search(parts[0]):
+        parts.pop(0)
+        dropped += 1
+    return " ".join(parts).strip()
+
 
 def classify_tail(tail_transcript: str) -> str:
     """Post-navigation outcome from the transcript captured after the last digit.

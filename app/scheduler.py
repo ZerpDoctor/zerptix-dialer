@@ -17,6 +17,7 @@ CLI:
 """
 from __future__ import annotations
 
+import re
 import argparse
 import json
 import logging
@@ -181,6 +182,37 @@ def compute_quarter_reset(row: QueueRow, local_now: datetime) -> dict | None:
 
 
 # --------------------------------------------------------------------------- #
+# emailed-this-quarter suppression
+# --------------------------------------------------------------------------- #
+
+_QUARTER_TAG = re.compile(r"(?:(\d{4})\s*-?\s*q([1-4])|q([1-4])\s*-?\s*(\d{4}))", re.I)
+
+
+def emailed_this_quarter(value: str, today: date) -> bool:
+    """True if the Queue's email_track cell says this company was emailed in
+    the CURRENT calendar quarter. Suppression lasts one quarter only: a
+    company emailed last quarter is dialed again this one.
+
+    The cell may hold an ISO date/timestamp ("2026-09-30", "2026-09-30T14:00")
+    or a quarter tag ("2026-Q3", "Q3 2026"). Any other non-blank text
+    ("yes", "sent") carries no date, so it is treated as emailed NOW -- the
+    safe direction (don't call someone already emailed) -- but can't expire
+    on its own; use a date or tag if the suppression should lapse."""
+    v = (value or "").strip()
+    if not v:
+        return False
+    m = _QUARTER_TAG.search(v)
+    if m:
+        year = int(m.group(1) or m.group(4))
+        q = int(m.group(2) or m.group(3))
+        return (year, q) == _quarter(today)
+    try:
+        return _quarter(date.fromisoformat(v[:10])) == _quarter(today)
+    except ValueError:
+        return True
+
+
+# --------------------------------------------------------------------------- #
 # eligibility
 # --------------------------------------------------------------------------- #
 
@@ -205,6 +237,8 @@ def evaluate(row: QueueRow, now_utc: datetime) -> Decision:
         return Decision(row, "skip", "do_not_call", local)
     if row.is_closed:
         return Decision(row, "skip", "replied_or_closed", local)
+    if emailed_this_quarter(row.email_track, local.date()):
+        return Decision(row, "skip", f"emailed this quarter (email_track={row.email_track!r})", local)
     if row.this_quarter_status == STATUS_CONFIRMED_MISS:
         return Decision(row, "skip", "confirmed_miss this quarter", local)
     if row.this_quarter_status == STATUS_CONFIRMED_COVERED:
