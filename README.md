@@ -547,3 +547,24 @@ scripts/
   get_google_refresh_token.py   one-time OAuth consent helper
   simulate_webhook.py           signed fake Twilio traffic (webhooks + IVR TwiML follower)
 ```
+
+## Dialing safety: health gate, circuit breaker, restart-proof cap
+
+`scheduler.tick` will not place a call unless all of these hold (`app/health.py`):
+
+- **Live checks pass** -- Anthropic, Deepgram (streaming connection), Google Sheets, SignalWire, dialer-web.
+  Re-verified every `GATE_RECHECK_OK_SECONDS` (600) while healthy, every `GATE_RECHECK_FAIL_SECONDS` (60) while blocked.
+- **The error circuit breaker is closed** -- if `BREAKER_MIN_ERRORS` (3) of the last `BREAKER_WINDOW_CALLS` (8) calls
+  logged in the last `BREAKER_WINDOW_MINUTES` (20) carry dependency errors in their notes (Anthropic unavailable,
+  credit balance, Sheet write failed), dialing stops for a 5-minute cooldown and until the live checks pass again.
+- **The nightly cap is counted from the Calls sheet**, not memory: today's (UTC) rows per `from_number`, plus this
+  process's dials that haven't logged yet. A redeploy or restart cannot reset it. If the Sheet cannot be read, the
+  tick dials nothing. (Known limit: calls a previous process left in flight, at most the pool size of 5.)
+- `SCHED_TZ_FAIRNESS=true` (off by default) reserves the cap across timezone windows: with n main timezones, the k-th
+  window to open may bring the night's total to k/n of the cap; unused share carries forward.
+
+Every stop and every recovery is logged at ERROR/WARN, appended to an **Alerts** tab in the Sheet, and POSTed to
+`ALERT_WEBHOOK_URL` if set (Slack/Discord-style: `text` and `content` are both sent). Repeats are suppressed for 30 min.
+Kill switch: `GATE_ENABLED=false` (note: changing any Railway variable restarts the service).
+
+Tests: `python -m unittest discover tests` (47 tests) -- run before every push.

@@ -28,6 +28,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 
+from . import health
 from .config import CFG
 from .queue_backend import SheetQueue
 from .queue_model import (
@@ -67,12 +68,47 @@ _pool_rr_index = 0
 
 def _pool_baseline(today_utc: date) -> dict[str, int]:
     """Working copy of today's per-number counts, resetting the module-level
-    dict (and its date) if the day has rolled over."""
+    dict (and its date) if the day has rolled over. In-memory only -- used by
+    the simulation and to keep the module date current."""
     global _pool_dial_counts, _pool_count_date
     if _pool_count_date != today_utc:
         _pool_dial_counts = {}
         _pool_count_date = today_utc
     return dict(_pool_dial_counts)
+
+
+# call_sid -> (from_number, utc date) for calls THIS process placed that have
+# not yet shown up as a row in the Calls sheet (a call is only logged when it
+# resolves, up to ~2 minutes after dialing). Together with the Sheet's rows
+# this is the nightly count; on its own the in-memory dict above is lost on
+# every restart -- 2026-09-29: a mid-night redeploy reset it to zero and a
+# second full 100-call cap was dialed.
+_dialed_sids: dict[str, tuple[str, date]] = {}
+
+
+def _sheet_backed_counts(today_utc: date, activity_fn) -> tuple[dict[str, int], list[dict]]:
+    """Today's per-number dial counts rebuilt from the Calls sheet plus this
+    process's not-yet-logged dials. Raises if the Sheet can't be read -- the
+    caller must then NOT dial (an unverifiable count is not a zero).
+
+    Known limit: calls a *previous* process placed that are still in flight
+    (at most the pool size, 5) are in neither source right after a restart."""
+    rows = activity_fn(today_utc.isoformat())
+    logged: dict[str, int] = {}
+    for r in rows:
+        if r["from_number"]:
+            logged[r["from_number"]] = logged.get(r["from_number"], 0) + 1
+    in_sheet = {r["call_sid"] for r in rows}
+    for sid in [k for k, (_n, day) in _dialed_sids.items() if k in in_sheet or day != today_utc]:
+        del _dialed_sids[sid]
+    counts = dict(logged)
+    for number, _day in _dialed_sids.values():
+        counts[number] = counts.get(number, 0) + 1
+    return counts, rows
+
+
+# The pre-dial gate / circuit breaker (app/health.py). One per process.
+GATE = health.DialGate()
 
 
 def _cap_for(number: str) -> int:
@@ -374,8 +410,47 @@ def pooled_http_dialer(phone: str, *, window: str, local_date_iso: str, from_num
 # tick
 # --------------------------------------------------------------------------- #
 
+def _tz_rank(local_dt: datetime) -> int:
+    """Windows open earliest for the zones furthest east; a zone's UTC offset
+    (hours behind UTC) orders them and follows DST automatically."""
+    off = local_dt.utcoffset()
+    return int(round(-off.total_seconds() / 3600)) if off is not None else 0
+
+
+def _tz_ranks(rows, now_utc: datetime) -> list[int]:
+    """The timezones that count as fairness buckets: those holding at least
+    5% of the queue (and >= 30 companies). A handful of Alaska/Hawaii rows
+    must not each claim a full share of the night's cap that they will never
+    use -- they draw on whatever is left at the end (see
+    _tz_share_allowance)."""
+    counts: dict[int, int] = {}
+    for r in rows:
+        tz = parse_tz(r.timezone)
+        if tz is not None:
+            rank = _tz_rank(now_utc.astimezone(tz))
+            counts[rank] = counts.get(rank, 0) + 1
+    total = sum(counts.values())
+    main = sorted(r for r, c in counts.items() if c >= max(30, 0.05 * total))
+    return main or sorted(counts)
+
+
+def _tz_share_allowance(local_now: datetime, fair_offsets: list[int], total_cap: int) -> int | None:
+    """Cumulative number of tonight's calls a timezone's window may bring the
+    night's total up to. With n main timezones, the k-th (in window-opening
+    order) may take the total to k/n of the cap -- the first window can use
+    only its own share, and whatever an earlier zone left unused carries
+    forward. A minor zone (not a bucket) counts as belonging after every main
+    zone that opens at or before it."""
+    if not fair_offsets or not total_cap:
+        return None
+    rank = _tz_rank(local_now)
+    k = max(1, sum(1 for r in fair_offsets if r <= rank))
+    return -(-total_cap * k // len(fair_offsets))   # ceil
+
+
 def tick(now_utc: datetime | None = None, *, queue=None, dialer=None,
-         dry_run: bool = False, record_attempts: bool = False) -> list[Decision]:
+         dry_run: bool = False, record_attempts: bool = False,
+         activity_fn=None, gate=None) -> list[Decision]:
     """One scheduling pass.
 
     Production: `dialer` is http_dialer, which POSTs /calls and the SERVER
@@ -402,8 +477,30 @@ def tick(now_utc: datetime | None = None, *, queue=None, dialer=None,
     # Local working copies: seeded from the persisted pool state, but only
     # written back at the end if this isn't a dry run -- so previewing never
     # spends the real budget, while still showing an accurate "who's next" cutoff.
-    pool_counts = _pool_baseline(now_utc.date())
+    # Restart-proof nightly count: rebuilt from the Calls sheet when the queue
+    # is the real Sheet (or an activity_fn is injected, as the tests do). The
+    # simulation's MemoryQueue keeps the old in-memory count.
+    sheet_rows: list[dict] = []
+    if activity_fn is None and isinstance(queue, SheetQueue):
+        from . import google_sheets
+        activity_fn = google_sheets.calls_activity
+    if activity_fn is not None:
+        _pool_baseline(now_utc.date())   # keeps the module date current
+        pool_counts, sheet_rows = _sheet_backed_counts(now_utc.date(), activity_fn)
+    else:
+        pool_counts = _pool_baseline(now_utc.date())
     rr_index = _pool_rr_index
+
+    gate = gate if gate is not None else GATE
+    if gate is GATE and gate._notes_fn is None and activity_fn is not None and not dry_run:
+        from . import google_sheets
+        gate._notes_fn = google_sheets.calls_notes
+    gate_verdict: tuple[bool, str] | None = None
+
+    fair_offsets: list[int] = []
+    if CFG.sched_tz_fairness and CFG.signalwire_from_numbers and all(_cap_for(n) for n in CFG.signalwire_from_numbers):
+        fair_offsets = _tz_ranks(queue.read_rows(), now_utc)
+    fair_total = sum(_cap_for(n) for n in CFG.signalwire_from_numbers) if fair_offsets else 0
 
     for row in queue.read_rows():
         tz = parse_tz(row.timezone)
@@ -420,6 +517,22 @@ def tick(now_utc: datetime | None = None, *, queue=None, dialer=None,
         if d.action != "dial":
             out.append(d)
             continue
+
+        if not dry_run:
+            if gate_verdict is None:
+                gate_verdict = gate.allow(sheet_rows)
+            if not gate_verdict[0]:
+                out.append(Decision(row, "skip", f"GATE: dialing paused -- {gate_verdict[1]}", d.local_now, d.window))
+                continue
+
+        if fair_offsets and d.window == "evening":
+            share = _tz_share_allowance(d.local_now, fair_offsets, fair_total)
+            if share is not None and sum(pool_counts.values()) >= share:
+                out.append(Decision(row, "skip",
+                                    f"timezone share: {sum(pool_counts.values())}/{share} of tonight's cap "
+                                    "already used, the rest is reserved for later timezones' windows",
+                                    d.local_now, d.window))
+                continue
 
         chosen_number, rr_index = pick_pool_number(pool_counts, rr_index)
         if chosen_number is None:
@@ -459,6 +572,7 @@ def tick(now_utc: datetime | None = None, *, queue=None, dialer=None,
             note = f"{d.window} attempt #{fields['current_quarter_attempts']} sid={call_sid} from={chosen_number}"
 
         pool_counts[chosen_number] = pool_counts.get(chosen_number, 0) + 1
+        _dialed_sids[call_sid] = (chosen_number, now_utc.date())
         out.append(Decision(row, "dialed", note, d.local_now, d.window))
 
     if not dry_run:
@@ -482,6 +596,10 @@ def _print(decisions: list[Decision]) -> None:
         names = ", ".join(d.row.company_name or d.row.phone_e164 for d in cap_skips)
         log.info("  [cap] all pool numbers at nightly cap -- %d eligible compan(y/ies) skipped this tick: %s",
                  len(cap_skips), names)
+    gate_skips = [d for d in decisions if d.action == "skip" and d.reason.startswith("GATE:")]
+    if gate_skips:
+        log.warning("  [GATE] %d eligible compan(y/ies) NOT dialed this tick -- %s",
+                    len(gate_skips), gate_skips[0].reason)
     if CFG.signalwire_from_numbers:
         usage = ", ".join(
             f"{n}={_pool_dial_counts.get(n, 0)}/{_cap_for(n) or '∞'}"
@@ -522,11 +640,21 @@ def _cli() -> None:
                   CFG.sched_tick_seconds, q.tab, CFG.sched_max_concurrent_calls)
         caps = {n: _cap_for(n) or "unlimited" for n in CFG.signalwire_from_numbers}
         log.info("nightly caps loaded at boot: %s", caps)
+        failures = 0
         while True:
             try:
                 _print(tick(queue=q, dialer=pooled_http_dialer))
+                failures = 0
             except Exception as e:  # noqa: BLE001
                 log.exception("tick failed: %s", e)
+                failures += 1
+                # A tick that can't run (typically the Sheet is unreadable, so
+                # neither the nightly count nor the queue can be trusted) dials
+                # nothing -- correct, but silent. Say so.
+                if failures >= 3:
+                    from . import alerts
+                    alerts.send("Scheduler ticks are failing -- nothing is being dialed",
+                                f"{failures} consecutive failures; latest: {e!r}"[:300], key="tick-failing")
             _time.sleep(CFG.sched_tick_seconds)
 
 

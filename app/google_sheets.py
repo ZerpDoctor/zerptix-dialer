@@ -270,3 +270,64 @@ def check_access() -> str:
     svc = _service()
     meta = svc.spreadsheets().get(spreadsheetId=CFG.sheet_id).execute()
     return meta.get("properties", {}).get("title", "(untitled)")
+
+
+# --------------------------------------------------------------------------- #
+# reads used by the nightly cap and the error circuit breaker
+# --------------------------------------------------------------------------- #
+
+def calls_activity(day_prefix: str) -> list[dict]:
+    """Every Calls row logged on `day_prefix` (a UTC date, "YYYY-MM-DD"), as
+    {row, call_sid, from_number, logged_at_iso}. Reads just those three
+    columns in ONE request. This is the durable record of what has actually
+    been dialed today, which the nightly cap counts from -- the scheduler's own
+    in-memory count is lost on every restart/redeploy (2026-09-29: a push
+    mid-night reset it and a second full 100-call cap was dialed)."""
+    svc = _service()
+    names = ("call_sid", "from_number", "logged_at_iso")
+    ranges = [f"{CFG.sheet_tab}!{col_letter(HEADER.index(n))}2:{col_letter(HEADER.index(n))}100000" for n in names]
+    resp = svc.spreadsheets().values().batchGet(spreadsheetId=CFG.sheet_id, ranges=ranges).execute()
+    cols = [vr.get("values", []) for vr in resp.get("valueRanges", [])]
+
+    def cell(col: int, i: int) -> str:
+        vals = cols[col]
+        return vals[i][0] if i < len(vals) and vals[i] else ""
+
+    n = max((len(c) for c in cols), default=0)
+    out = []
+    for i in range(n):
+        iso = cell(2, i)
+        if iso.startswith(day_prefix):
+            out.append({"row": i + 2, "call_sid": cell(0, i), "from_number": cell(1, i), "logged_at_iso": iso})
+    return out
+
+
+def calls_notes(rows: list[int]) -> dict[int, str]:
+    """The notes cell for specific Calls rows (one request), for the breaker."""
+    if not rows:
+        return {}
+    svc = _service()
+    col = col_letter(HEADER.index("notes"))
+    ranges = [f"{CFG.sheet_tab}!{col}{r}" for r in rows]
+    resp = svc.spreadsheets().values().batchGet(spreadsheetId=CFG.sheet_id, ranges=ranges).execute()
+    out = {}
+    for r, vr in zip(rows, resp.get("valueRanges", [])):
+        v = vr.get("values", [])
+        out[r] = v[0][0] if v and v[0] else ""
+    return out
+
+
+def append_alert(tab: str, ts_iso: str, level: str, title: str, detail: str) -> None:
+    """Append one row to the Alerts tab, creating the tab if it is missing."""
+    svc = _service()
+    meta = svc.spreadsheets().get(spreadsheetId=CFG.sheet_id).execute()
+    if tab not in {s["properties"]["title"] for s in meta.get("sheets", [])}:
+        svc.spreadsheets().batchUpdate(
+            spreadsheetId=CFG.sheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": tab}}}]}).execute()
+        svc.spreadsheets().values().update(
+            spreadsheetId=CFG.sheet_id, range=f"{tab}!A1", valueInputOption="RAW",
+            body={"values": [["time_utc", "level", "title", "detail"]]}).execute()
+    svc.spreadsheets().values().append(
+        spreadsheetId=CFG.sheet_id, range=f"{tab}!A1", valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS", body={"values": [[ts_iso, level, title, detail]]}).execute()

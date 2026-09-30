@@ -178,6 +178,23 @@ class Config:
     sched_first_window: str = "evening"
     sched_tick_seconds: int = 60
     sched_nightly_cap: int = 0  # 0 = unlimited. Process-lifetime count, resets daily (UTC).
+    # Pre-dial health gate + error circuit breaker (app/health.py). Dialing is
+    # refused unless Anthropic, Deepgram, Sheets, SignalWire and dialer-web
+    # all pass a live check -- a call placed while a dependency is down can't
+    # be redone (2026-09-29: the Anthropic balance ran out mid-batch and 56
+    # calls pressed menu digits by keyword fallback, wrong ones included).
+    gate_enabled: bool = True
+    gate_recheck_ok_seconds: int = 600      # re-verify this often while healthy
+    gate_recheck_fail_seconds: int = 60     # ...and this often while blocked
+    breaker_min_errors: int = 3             # trip on >= this many dependency errors...
+    breaker_window_calls: int = 8           # ...among the most recent this-many calls...
+    breaker_window_minutes: int = 20        # ...logged within this many minutes
+    alert_webhook_url: str = ""             # optional Slack/Discord-style webhook
+    # Nightly cap counted from the Calls sheet (restart-proof) and, optionally,
+    # spread across timezone windows so the first window can't use the whole
+    # night's cap (2026-09-30: Eastern used it all; Central/Pacific were never
+    # dialed). Fairness changes WHO gets called, so it is opt-in.
+    sched_tz_fairness: bool = False
     sched_max_concurrent_calls: int = 5  # bounded dial pool (2026-09-21),
     # replacing an earlier fixed-delay pacing guess. Real calibration against
     # live franchise numbers: N=3/5/8 concurrent all came back 0% "unknown"
@@ -323,6 +340,14 @@ def load() -> Config:
         sched_first_window=_get("SCHED_FIRST_WINDOW", "evening"),
         sched_tick_seconds=int(_get("SCHED_TICK_SECONDS", "60") or "60"),
         sched_nightly_cap=int(_get("SCHED_NIGHTLY_CAP", "0") or "0"),
+        gate_enabled=_bool("GATE_ENABLED", True),
+        gate_recheck_ok_seconds=int(_get("GATE_RECHECK_OK_SECONDS", "600") or "600"),
+        gate_recheck_fail_seconds=int(_get("GATE_RECHECK_FAIL_SECONDS", "60") or "60"),
+        breaker_min_errors=int(_get("BREAKER_MIN_ERRORS", "3") or "3"),
+        breaker_window_calls=int(_get("BREAKER_WINDOW_CALLS", "8") or "8"),
+        breaker_window_minutes=int(_get("BREAKER_WINDOW_MINUTES", "20") or "20"),
+        alert_webhook_url=_get("ALERT_WEBHOOK_URL", ""),
+        sched_tz_fairness=_bool("SCHED_TZ_FAIRNESS", False),
         sched_max_concurrent_calls=int(_get("SCHED_MAX_CONCURRENT_CALLS", "5") or "5"),
         inbound_pool_numbers=_e164_list(_get("INBOUND_POOL_NUMBERS", "")),
         inbound_log_tab=_get("INBOUND_LOG_TAB", "Inbound"),
