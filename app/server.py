@@ -619,6 +619,14 @@ def _resolve(call_sid: str, hangup: bool = True, recovered: bool = False) -> Non
     # between the two would decide the outcome from one instant and build the
     # notes from another -- see CallStore.snapshot's docstring for the real
     # incident this fixes.
+    # Who ended the call. hangup=True means WE sent the hangup; False means
+    # the call was already over when we got here (the far end hung up or the
+    # network dropped it). Without this there is no way to tell, from the
+    # Sheet, a call we cut short from one the other side ended -- the
+    # question raised by 7 calls on 2026-09-29 that ended 19-49s after a
+    # digit press with nothing heard afterwards.
+    STORE.update(call_sid, resolve_note=("ended by: us (we hung up)" if hangup
+                                         else "ended by: far end / network (call already over)"))
     rec = STORE.snapshot(call_sid)
     outcome, note = _compute_outcome(rec)
     _write_sheet_with_retry(_build_row(rec, outcome, note))
