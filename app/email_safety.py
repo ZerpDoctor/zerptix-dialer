@@ -47,6 +47,12 @@ def assess(row: dict) -> tuple[str, str]:
     transcript = (row.get("ivr_transcript") or "").lower()
     notes = (row.get("notes") or "").lower()
 
+    # A Queue prospect's row always carries its company name (it is looked up from
+    # the Queue by phone). No name = a manual or test call (2026-09-30: 56 such rows
+    # from franchise/own-cell tests, 4 of them would have read as "yes").
+    if "company_name" in row and not (row.get("company_name") or "").strip():
+        return "no", "no company name: a manual/test call, not a Queue prospect"
+
     if outcome in _NOT_A_MISS:
         return "no", f"{outcome}: {_NOT_A_MISS[outcome]}"
     if outcome not in ("voicemail", "alt_miss", "gatekeeping_miss", "no_answer"):

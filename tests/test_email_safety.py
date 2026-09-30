@@ -58,6 +58,16 @@ class EmailSafety(unittest.TestCase):
         r = row("voicemail", "leave a message", notes="evidence unreliable; ivr: haiku: ...")
         self.assertEqual(assess(r)[0], "no")
 
+    def test_a_row_without_a_company_name_is_never_email_safe(self):
+        """Franchise / own-cell test calls carry no company name (56 rows on 2026-09-30)."""
+        r = row("voicemail", "leave a message after the tone")
+        r["company_name"] = ""
+        a, why = assess(r)
+        self.assertEqual(a, "no")
+        self.assertIn("no company name", why)
+        r["company_name"] = "Real Restoration Co"
+        self.assertEqual(assess(r)[0], "yes")
+
     def test_every_answer_has_a_reason(self):
         for o in ("voicemail", "alt_miss", "gatekeeping_miss", "no_answer", "extended_hold", "answered", ""):
             a, why = assess(row(o, "leave a message"))

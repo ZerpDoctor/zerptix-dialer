@@ -24,7 +24,7 @@ def main(apply: bool) -> None:
     values = svc.spreadsheets().values().get(
         spreadsheetId=CFG.sheet_id, range=f"{CFG.sheet_tab}!A1:Z100000").execute().get("values", [])
     header, rows = values[0], values[1:]
-    idx = {name: header.index(name) for name in ("outcome", "digits_sent", "ivr_transcript", "notes")}
+    idx = {name: header.index(name) for name in ("company_name", "outcome", "digits_sent", "ivr_transcript", "notes")}
     out, dist = [], collections.Counter()
     for r in rows:
         r = r + [""] * (len(header) - len(r))
