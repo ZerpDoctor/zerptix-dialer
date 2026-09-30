@@ -736,7 +736,16 @@ def _option_sentence(t: str, digit: str) -> str:
     return ""
 
 
-def quick_digit(transcript: str) -> tuple[str, str, bool] | None:
+def _option_sentence_complete(t: str, digit: str) -> bool:
+    """True once the sentence containing this digit's "press N" has ended (a
+    terminator follows it in the text heard so far)."""
+    for m in _OPT_ANCHOR.finditer(t):
+        if m.group("d1") and _norm_digit(m.group("d1")) == digit:
+            return any(c in t[m.end():] for c in ".?!")
+    return False
+
+
+def quick_digit(transcript: str, require_complete: bool = False) -> tuple[str, str, bool] | None:
     """(digit, reason, is_emergency) when the choice needs no model, else None.
 
     Two unambiguous shapes only: (1) the menu itself calls one option the
@@ -763,11 +772,15 @@ def quick_digit(transcript: str) -> tuple[str, str, bool] | None:
         if option_is_emergency(t, digit):
             if any(w in _option_sentence(t, digit) for w in _NOT_A_LIVE_OPTION):
                 return None          # "press 2 to leave an emergency message" is not the live line
+            if require_complete and not _option_sentence_complete(t, digit):
+                return None
             return digit, f"the menu names {digit} as its emergency option", True
     if len(options) == 1:
         digit = options[0][0]
         sent = _option_sentence(t, digit)
         if any(w in sent for w in _CONNECT_WORDS) and not any(w in sent for w in _NOT_A_LIVE_OPTION):
+            if require_complete and not _option_sentence_complete(t, digit):
+                return None
             return digit, f"the only option, {digit}, connects to a person", False
     return None
 

@@ -116,8 +116,8 @@ class ListeningTests(ListeningBase):
         far end was mid-prompt and the rest of the menu arrived as 'post-press'
         audio. Nothing may be pressed while the far end is still talking."""
         c = Call(self.client)
-        c.speak("Thank you for calling Greenville. If you have an emergency property damage, "
-                "please press nine now.", interim="Otherwise please try again during our usual opening hours")
+        c.speak("Thank you for calling Greenville. For sales press one. For service press two.",
+                interim="For billing press three")
         xml = c.turn()
         self.assertIsNone(played(xml), "pressed a digit mid-prompt")
         self.assertIn("<Gather", xml, "should keep listening")
@@ -192,15 +192,15 @@ class PressTimingTests(ListeningBase):
     the prompt). 2026-09-30 franchise tests pressed 3-10s late and SERVPRO East
     Nashville answered "Invalid input" before our digit arrived."""
 
-    MENU = ("Thank you for calling. Press one for emergency services. Press two for scheduling. "
-            "Press zero for all other calls.")
+    MENU = ("Thank you for calling. Press one for sales. Press two for scheduling. "
+            "Press zero for the operator.")
 
     def test_presses_on_the_first_turn_once_the_menu_is_over(self):
         c = Call(self.client)
         c.speak(self.MENU)
         c.go_quiet(2.5)                     # the prompt ended 2.5s ago
         c.turn()
-        self.assertEqual(c.rec.digits_sent, ["1"], "no extra stability poll should be needed")
+        self.assertEqual(len(c.rec.digits_sent), 1, "no extra stability poll should be needed")
 
     def test_waits_while_the_silence_is_shorter_than_the_press_quiet(self):
         c = Call(self.client)
@@ -211,7 +211,7 @@ class PressTimingTests(ListeningBase):
         self.assertEqual(c.rec.press_waits, 1)
         c.go_quiet(2.6)
         c.turn()
-        self.assertEqual(c.rec.digits_sent, ["1"])
+        self.assertEqual(len(c.rec.digits_sent), 1)
 
     def test_a_looping_menu_is_pressed_without_waiting_for_a_long_silence(self):
         c = Call(self.client)
@@ -314,6 +314,32 @@ class StreamRecoveryTests(ListeningBase):
         self.assertEqual(c.rec.stream_restarts, CFG.stream_max_restarts)
 
 
+class EarlyPressTests(ListeningBase):
+    """SERVPRO East Nashville: the emergency option is FIRST in a 26s menu that never goes
+    quiet for 2s before the phone system times out and replays it. A clear pick whose
+    sentence is complete must not wait for the rest of the menu."""
+
+    def test_presses_the_emergency_option_while_the_rest_of_the_menu_is_still_playing(self):
+        c = Call(self.client)
+        c.speak("Please listen carefully to the following options. Press one for emergency services. "
+                "Press two to speak with a member of our office staff regarding scheduling.")
+        c.turn()                                  # the far end is speaking right now
+        self.assertEqual(c.rec.digits_sent, ["1"], "should press as soon as the emergency sentence is complete")
+        self.assertTrue(c.rec.emergency_route)
+
+    def test_does_not_press_while_the_emergency_sentence_is_unfinished(self):
+        c = Call(self.client)
+        c.speak("Please listen carefully to the following options. Press one for emergency")
+        c.turn()
+        self.assertEqual(c.rec.digits_sent, [])
+
+    def test_a_menu_without_a_clear_pick_still_waits_for_the_end(self):
+        c = Call(self.client)
+        c.speak("Press one for sales. Press two for support. Press three for billing.")
+        c.turn()
+        self.assertEqual(c.rec.digits_sent, [])
+
+
 class LongMenuTests(ListeningBase):
     def test_a_long_menu_is_not_pressed_before_it_is_over(self):
         """A 25-30s prompt must not make the gate fail open (the general cap is
@@ -327,7 +353,7 @@ class LongMenuTests(ListeningBase):
 
     def test_the_turn_trace_records_deferrals_waits_and_the_press(self):
         c = Call(self.client)
-        c.speak("Press one for emergency services. Press two for scheduling.")
+        c.speak("Press one for sales. Press two for scheduling. Press zero for the operator.")
         c.turn()                                   # speaking -> D
         c.go_quiet(1.5)
         c.turn()                                   # quiet but < press quiet -> W
@@ -336,7 +362,7 @@ class LongMenuTests(ListeningBase):
         trace = c.rec.turn_trace
         self.assertIn("D@", trace)
         self.assertIn("W@", trace)
-        self.assertIn("P1@", trace)
+        self.assertRegex(trace, r"P\d@")
 
 
 class EmergencyFlagTests(unittest.TestCase):

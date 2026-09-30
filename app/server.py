@@ -973,6 +973,14 @@ def ivr_turn(stage: str, level: int) -> Response:
         # representative" for ~27s before we pressed): nothing left to wait for.
         _seg = rec.transcript_accum[rec.transcript_at_last_digit:]
         _looping = stage == "menu" and ivr.menu_repeats(_seg)
+        # A clear pick whose sentence is already complete -- the menu names its
+        # emergency option, or its only option connects to a person -- does not
+        # depend on anything the menu says later, so there is nothing to wait
+        # for. SERVPRO East Nashville's 26s menu never went quiet for 2s before
+        # it timed out ("Invalid input") and replayed; we pressed at +39s and
+        # +52s. Its FIRST option is the emergency one.
+        _early = stage == "menu" and not rec.digits_sent and ivr.quick_digit(_seg, require_complete=True) is not None
+        _looping = _looping or _early
         _cap = CFG.listen_menu_max_defers if (stage == "menu" and ivr.parse_options(_seg)) else CFG.listen_max_defers
         if (_buf.is_speaking(CFG.listen_quiet_seconds) and not _looping
                 and rec.speaking_deferrals < _cap):
@@ -1172,6 +1180,7 @@ def ivr_turn(stage: str, level: int) -> Response:
             _q = media_stream.get_buffer(call_sid).quiet_for()
             if (_q is not None and _q < CFG.listen_press_quiet_seconds
                     and not ivr.menu_repeats(segment)
+                    and ivr.quick_digit(segment, require_complete=True) is None
                     and rec.press_waits < CFG.listen_press_max_waits):
                 STORE.update(call_sid, press_waits=rec.press_waits + 1,
                              gather_count=max(0, rec.gather_count - 1))
