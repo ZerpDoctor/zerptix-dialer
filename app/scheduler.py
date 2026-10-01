@@ -269,6 +269,11 @@ def evaluate(row: QueueRow, now_utc: datetime) -> Decision:
     local = now_utc.astimezone(tz)
     today = local.date().isoformat()
 
+    # A US number's area code cannot start with 0 or 1. 122 clay_import_2026 rows carry
+    # numbers like +11790442279 / +10999999999: nothing can answer them, yet 64 were
+    # logged as misses and sent to email. Never dial (or count) one.
+    if not re.fullmatch(r"\+1[2-9]\d{9}", row.phone_e164 or ""):
+        return Decision(row, "skip", f"FLAG: phone is not a valid US number ({row.phone_e164!r})", local)
     if row.is_dnc:
         return Decision(row, "skip", "do_not_call", local)
     if row.is_closed:
