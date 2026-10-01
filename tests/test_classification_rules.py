@@ -333,3 +333,17 @@ class Outcomes(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AiReceptionistIsAnswered(unittest.TestCase):
+    """Owner decision 2026-10-01: an AI receptionist picking up is an answer, not gatekeeping."""
+
+    def test_lightning_of_sarasota(self):
+        t = ("Hi. Thanks for calling Lightning Restoration, specializing in water and mold damage, "
+             "This is the AI after hours receptionist. I'm going to ask you a few questions. "
+             "But first, please state your full name and spell your last name for me.")
+        self.assertFalse(ivr.looks_like_gatekeeping(t).is_gatekeeping)
+
+    def test_a_plain_name_prompt_is_still_gatekeeping(self):
+        t = "Please state your full name and spell your last name, and the reason for your call."
+        self.assertTrue(ivr.looks_like_gatekeeping(t).is_gatekeeping)

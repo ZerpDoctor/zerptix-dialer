@@ -462,6 +462,14 @@ class GatekeepingDecision:
     reasoning: str
 
 
+# Owner decision 2026-10-01: a company whose line is answered by its AI receptionist
+# HAS answered (Sunrise -> answered; Lightning of Sarasota "This is the AI after hours
+# receptionist... state your full name" was logged gatekeeping_miss, email_safe yes).
+_AI_RECEPTIONIST = re.compile(
+    r"\b(this is (the|our|an?) (\w+ ){0,3}ai\b|\bai (\w+ ){0,2}(receptionist|assistant|agent)\b"
+    r"|virtual (receptionist|assistant))")
+
+
 def looks_like_gatekeeping(transcript: str) -> GatekeepingLook:
     """Cheap keyword pre-filter, only ever consulted by the caller AFTER
     looks_like_menu() has already said this is NOT a menu -- so a real digit-
@@ -469,6 +477,8 @@ def looks_like_gatekeeping(transcript: str) -> GatekeepingLook:
     t = (transcript or "").lower()
     if not t.strip():
         return GatekeepingLook(False, [])
+    if _AI_RECEPTIONIST.search(t):
+        return GatekeepingLook(False, [])      # policy: an AI receptionist answering is an answer
     matched = [p for p in _GATEKEEPING_PHRASES if p in t]
     return GatekeepingLook(bool(matched), matched)
 
