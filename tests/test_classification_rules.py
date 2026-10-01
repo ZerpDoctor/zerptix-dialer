@@ -362,3 +362,73 @@ class PressAnyKey(unittest.TestCase):
     def test_a_voicemail_box_is_not(self):
         self.assertIsNone(ivr.any_key_digit("Please leave a message at the tone. When you have finished recording, press any key to be connected to the operator."))
         self.assertIsNone(ivr.any_key_digit("Press any key to continue."))
+
+
+class RingingIsNotAFinishedCall(unittest.TestCase):
+    """2026-10-01: Longview / Doan / Beacon -- AMD "human", ~800 frames, no text, levels that
+    pulse like ringback; we hung up at 18s. Levels below are the real traces from the notes."""
+    LONGVIEW = [-78, -79, -25, -22, -25, -78, -78, -78, -25, -22, -25, -81, -90, -78, -24, -22, -26]
+    DOAN = [-18, -12, -13, -78, -78, -78, -18, -12, -13, -78, -78, -78, -18, -12, -13, -78]
+    BEACON = [-19, -12, -13, -78, -78, -78, -19, -12, -13, -78, -78, -78, -19, -12, -13]
+
+    def test_the_three_real_traces_are_ringing(self):
+        from app import media_stream
+        for t in (self.LONGVIEW, self.DOAN, self.BEACON):
+            self.assertTrue(media_stream.ringback_pattern(t), t)
+
+    def test_other_audio_is_not(self):
+        from app import media_stream
+        f = media_stream.ringback_pattern
+        self.assertFalse(f([]))
+        self.assertFalse(f([-90] * 20))                                   # dead silence
+        self.assertFalse(f([-25] * 20))                                   # a tone / music with no gaps
+        self.assertFalse(f([-30, -35, -28, -40, -33, -31, -38, -29]))     # speech-like, no silent gaps
+        self.assertFalse(f([-20, -20, -90, -90, -90, -20, -90, -20, -20, -20]))   # irregular cadence
+        self.assertFalse(f([-20, -90, -90, -90]))                         # one burst only
+
+    def test_still_ringing_at_the_cap_is_unknown_not_a_miss(self):
+        rec = types.SimpleNamespace(
+            call_sid="CAring", call_status="", answered_by="human", company_name="Test Co",
+            gatekeeping_detected=False, alt_contact_detected=False, hit_time_cap=True, ivr_detected=False,
+            digits_sent=[], transcript_accum="", transcript_at_last_digit=0, ring_seen=True)
+        self.assertEqual(server._compute_outcome(rec)[0], "unknown")
+        rec.ring_seen = False
+        self.assertEqual(server._compute_outcome(rec)[0], "extended_hold")
+
+
+class RingWaitWiring(unittest.TestCase):
+    """_conclude_not_menu on an empty AMD-human call whose audio pulses like ringback."""
+
+    def run_case(self, enabled):
+        from app import media_stream
+        from app.config import CFG
+        sid = f"CAring{int(enabled)}"
+        server.STORE.register(sid, "+15555550199", company_name="Ring Co")
+        server.STORE.update(sid, answered_by="human")
+        media_stream.get_buffer(sid).energy[:] = RingingIsNotAFinishedCall.DOAN
+        resolved, old = [], (server._resolve, CFG.ring_wait_enabled, CFG.stream_transcription_enabled)
+        server._resolve = lambda s: resolved.append(s)
+        object.__setattr__(CFG, "ring_wait_enabled", enabled)
+        object.__setattr__(CFG, "stream_transcription_enabled", True)
+        try:
+            with server.app.test_request_context("/x", method="POST"):
+                resp = server._conclude_not_menu(sid, server.STORE.snapshot(sid))
+                body = resp.get_data(as_text=True)
+        finally:
+            server._resolve = old[0]
+            object.__setattr__(CFG, "ring_wait_enabled", old[1])
+            object.__setattr__(CFG, "stream_transcription_enabled", old[2])
+        return resolved, body, server.STORE.snapshot(sid)
+
+    def test_shadow_mode_still_hangs_up_but_says_it_would_have_waited(self):
+        resolved, body, rec = self.run_case(False)
+        self.assertEqual(len(resolved), 1)
+        self.assertIn("Hangup", body)
+        self.assertTrue(rec.ring_seen)
+        self.assertIn("shadow: would have kept waiting", rec.press_diag)
+
+    def test_enabled_keeps_waiting_while_the_budget_allows(self):
+        resolved, body, rec = self.run_case(True)
+        self.assertEqual(resolved, [])
+        self.assertNotIn("Hangup", body)
+        self.assertIn("-- waiting", rec.press_diag)

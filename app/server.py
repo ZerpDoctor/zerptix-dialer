@@ -392,6 +392,8 @@ def _compute_outcome(rec) -> tuple[str, str]:
             # a note that said nothing about the classifier having been down.
             if decision.reasoning:
                 cap_note = f"; last tail read: {decision.reasoning}"
+        if getattr(rec, "ring_seen", False) and not cap_transcript.strip() and not rec.digits_sent:
+            return "unknown", "still ringing when the budget ran out (ring pattern, no text) -- nobody picked up; not a miss claim"
         return "extended_hold", "hit 60s master timer with no resolution" + cap_note
 
     if rec.ivr_detected and not rec.digits_sent:
@@ -1388,6 +1390,18 @@ def _conclude_not_menu(call_sid: str, rec) -> Response:
                 _resolve(call_sid)
                 return _twiml("<Hangup/>")
             return _twiml(_gather("menu", 0, CFG.ivr_tail_gather_seconds))
+        # No text at all. If the audio shows a RINGING cadence the far end has not
+        # picked up yet (Longview / Doan / Beacon 2026-10-01: AMD "human", ~800 frames,
+        # zero words, we hung up at 18s mid-ring). Shadow mode only notes it.
+        if CFG.stream_transcription_enabled and media_stream.ringback_pattern(media_stream.get_buffer(call_sid).energy):
+            _at = STORE.seconds_since_answered(call_sid)
+            if not rec.ring_seen:
+                STORE.update(call_sid, ring_seen=True,
+                             press_diag=(rec.press_diag + "; " if rec.press_diag else "")
+                                        + f"ring pattern at +{_at:.0f}s, no text "
+                                        + ("-- waiting" if CFG.ring_wait_enabled else "-- shadow: would have kept waiting"))
+            if CFG.ring_wait_enabled and not _budget_exhausted(call_sid, rec, margin=3):
+                return _twiml(_gather("menu", 0, CFG.ivr_tail_gather_seconds))
         _resolve(call_sid)
         return _twiml("<Hangup/>")
     # Hand off to AMD: hold the line for the remaining budget, then hang up. If

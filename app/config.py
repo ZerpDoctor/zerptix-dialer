@@ -174,6 +174,10 @@ class Config:
     # audio, is restarted on the next turn (blank-transcript calls: 2 of 11
     # franchise tests -- "never connected", and "12 frames in a 48s call").
     stream_restart_enabled: bool = True
+    # A call that shows a RINGING cadence in its audio and no text is not a finished call.
+    # False = shadow: only note "would keep waiting" on the row. True = actually keep waiting
+    # (bounded by the hold budget); a call still ringing at the cap is `unknown`, not a miss.
+    ring_wait_enabled: bool = False
     stream_max_restarts: int = 2
     # Hold budget: ivr_hold_budget_seconds is counted from the LAST digit
     # press (or from answer if none was pressed), so time spent in menus no
@@ -348,6 +352,7 @@ def load() -> Config:
         listen_press_quiet_seconds=float(_get("LISTEN_PRESS_QUIET_SECONDS", "2.0") or "2.0"),
         listen_press_max_waits=int(_get("LISTEN_PRESS_MAX_WAITS", "6") or "6"),
         stream_restart_enabled=_bool("STREAM_RESTART_ENABLED", True),
+        ring_wait_enabled=_bool("RING_WAIT_ENABLED", False),
         stream_max_restarts=int(_get("STREAM_MAX_RESTARTS", "2") or "2"),
         ivr_hold_budget_seconds=int(_get("IVR_HOLD_BUDGET_SECONDS", "60") or "60"),
         ivr_hard_cap_seconds=int(_get("IVR_HARD_CAP_SECONDS", "110") or "110"),

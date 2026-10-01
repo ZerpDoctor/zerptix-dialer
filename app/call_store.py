@@ -60,7 +60,8 @@ class CallRecord:
     # then 8 ("name directory") from the same menu's leftover text (2026-10-01).
     press_waits: int = 0                # turns spent waiting for the far end to be quiet
     # long enough to press (CFG.listen_press_quiet_seconds); reset on a press
-    stream_restarts: int = 0            # times the media stream was restarted mid-call
+    ring_seen: bool = False             # audio showed a ringing cadence with no text (media_stream.ringback_pattern)
+    stream_restarts: int = 0           # times the media stream was restarted mid-call
     stream_frames_seen: int = -1        # buf.frames at the last turn (stall detection)
     stream_frames_changed_at: float | None = None
     speaking_deferrals: int = 0         # consecutive turns skipped because the far

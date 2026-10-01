@@ -61,6 +61,37 @@ _DEEPGRAM_WS_URL = (
 )
 
 
+def ringback_pattern(energy: list) -> bool:
+    """True if the per-second levels look like a phone RINGING: tone bursts of 1-4s
+    (loud) separated by near-digital silence, repeating at a steady 3-8s period
+    (US ringback is ~2s on / 4s off). 2026-10-01: Longview, Doan and Beacon were
+    AMD "human" with zero text and levels like `-18 -12 -13 -78 -78 -78` repeating;
+    we hung up at 18s while the far end was still ringing. Meant for calls where NO
+    text was heard -- speech does not have this clean on/off cadence, but callers
+    must still gate on silence of the transcript."""
+    loud = [e > -45 for e in energy]
+    quiet = [e < -60 for e in energy]
+    runs, i = [], 0                       # (start, length) of each loud run
+    while i < len(loud):
+        if loud[i]:
+            j = i
+            while j < len(loud) and loud[j]:
+                j += 1
+            runs.append((i, j - i))
+            i = j
+        else:
+            i += 1
+    if len(runs) < 2 or any(not 1 <= n <= 4 for _, n in runs):
+        return False
+    starts = [s for s, _ in runs]
+    periods = [b - a for a, b in zip(starts, starts[1:])]
+    if any(not 3 <= p <= 8 for p in periods) or max(periods) - min(periods) > 1:
+        return False
+    # every gap between bursts must be (almost) digital silence, not low-level speech
+    gaps = [energy[s + n:nxt] for (s, n), nxt in zip(runs, starts[1:])]
+    return all(g and sum(1 for e in g if e < -60) >= max(1, len(g) - 1) for g in gaps)
+
+
 @dataclass
 class StreamBuffer:
     """Accumulates Deepgram's finalized transcript segments for one call.
