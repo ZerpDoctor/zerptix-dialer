@@ -1188,7 +1188,7 @@ def ivr_turn(stage: str, level: int) -> Response:
     # arriving after the press, read as a second-level menu, and a second
     # digit -- never an answer to anything we did -- was pressed on top of a
     # connection already in progress.
-    already_on_emergency_route = bool(rec.emergency_route and rec.digits_sent)
+    already_on_emergency_route = bool((rec.emergency_route or rec.stop_navigating) and rec.digits_sent)
 
     if (menu_look and not already_on_emergency_route
             and (menu_look.is_menu or (gatekeeping and gatekeeping.has_digit_option)
@@ -1221,6 +1221,12 @@ def ivr_turn(stage: str, level: int) -> Response:
                                decision.flagged, decision.reasoning,
                                is_emergency_route=decision.is_emergency_route)
             STORE.update(call_sid, phase="navigating")
+            # A press that asks for a person -- the emergency line, a representative, the
+            # operator -- ends navigation: whatever follows is the answer to it.
+            _clause = ivr._option_clause((segment or "").lower(), str(decision.digit))[0]
+            if (decision.is_emergency_route or ivr._clause_emergency(_clause)
+                    or any(w in _clause for w in ivr._CONNECT_WORDS)):
+                STORE.update(call_sid, stop_navigating=True)
             # Timing evidence for every press: how long after answer, and how
             # long the far end had been silent. Written to the Calls notes so
             # a press that lands mid-prompt (or one the far end hangs up on)

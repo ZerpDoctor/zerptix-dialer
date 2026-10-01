@@ -54,6 +54,10 @@ class CallRecord:
     # one for..." option four separate times. Capped in ivr_turn so a
     # looping menu can't defer forever; reset alongside the fields above.
     turn_trace: str = ""                # compact per-turn log (D=deferred, W=waiting to press, P=pressed)
+    stop_navigating: bool = False       # the digit just pressed was the "reach a person" option (an
+    # emergency line, a representative, an operator): what follows is the answer to that press, so
+    # no further digit is pressed. Albany Environmental pressed 3 ("speak to a client representative")
+    # then 8 ("name directory") from the same menu's leftover text (2026-10-01).
     press_waits: int = 0                # turns spent waiting for the far end to be quiet
     # long enough to press (CFG.listen_press_quiet_seconds); reset on a press
     stream_restarts: int = 0            # times the media stream was restarted mid-call

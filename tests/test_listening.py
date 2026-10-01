@@ -340,6 +340,25 @@ class EarlyPressTests(ListeningBase):
         self.assertEqual(c.rec.digits_sent, [])
 
 
+class OnePressForAPersonTests(ListeningBase):
+    """Albany Environmental pressed 3 ("speak to a client representative") and then 8 ("name
+    directory") from the leftover of the same menu."""
+
+    def test_no_second_digit_after_pressing_the_option_that_reaches_a_person(self):
+        c = Call(self.client)
+        c.speak("If you know your party's extension, you may dial it at any time. To speak to a client "
+                "representative now, please press three. For the name directory, please press eight.")
+        c.go_quiet(2.5)
+        c.turn(); c.turn()
+        self.assertEqual(c.rec.digits_sent[:1], ["3"])
+        self.assertTrue(c.rec.stop_navigating)
+        c.speak("You could also email us. For the name directory, please press eight.")
+        c.go_quiet(3.0)
+        for lvl in (1, 1, 1):
+            c.turn("menu", lvl)
+        self.assertEqual(c.rec.digits_sent, ["3"], f"pressed again: {c.rec.digits_sent}")
+
+
 class LongMenuTests(ListeningBase):
     def test_a_long_menu_is_not_pressed_before_it_is_over(self):
         """A 25-30s prompt must not make the gate fail open (the general cap is
