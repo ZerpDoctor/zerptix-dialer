@@ -197,6 +197,82 @@ class EmergencyVocabulary(Base):
         self.assertFalse(ivr.option_is_emergency(t, "1"))
 
 
+LEGACY = ("Thank you for calling Legacy Restoration. For Chicago, press one. Denver, press two. Fort Myers, press three. "
+          "Saint Petersburg, press four. Orlando, press five. If this is an emergency, please press six. "
+          "For a dial by name directory, press nine.")
+TRURENU = ("Thank you for calling TrueRenew. If you know your party's extension, please enter it now or press eight for "
+           "the name directory. For sales, press one. For our administrative team, press two. For emergency services, "
+           "press three. Or zero for the next available representative.")
+BYLT_MENU = ("Thank you for calling Built Restoration. You have reached our after hours emergency dispatch line. "
+             "Press one for emergencies, Press two to leave a voice mail, and your call will be returned during normal "
+             "business hours. Monday through Friday.")
+BYLT_REPLAY = ("Press one for emergencies. Press two to leave a voice mail. And your call will be returned during normal "
+               "business hours. Monday through Friday between eight AM and four thirty PM. We thank you again for calling Built.")
+DIVERSIFIED_TAIL = ("Thank you for calling Diversified Property Services. Please press one to leave a message or dial the "
+                    "extension you are trying to reach. Thank you for calling diverse")
+GATEWAY = ("Hello. You've reached Diana Robbins at Gateway Rust Please leave a message, and I will call you back promptly. "
+           "If your matter is urgent, please dial John Robbins at seven three four six four five five one seven "
+           "Thank you for calling.")
+SUNRISE = "Thank you for calling Sunrise. This Al speaking. How can I help you? Hello? Hello? Hello? Can you hear me?"
+
+
+class EmergencyAttribution(Base):
+    """2026-10-01: the emergency words were handed to the PREVIOUS digit when the
+    description comes before its number -- Legacy (pressed 5, not 6), TruRenu (2, not 3)."""
+
+    def test_the_emergency_option_is_the_digit_its_own_sentence_names(self):
+        self.assertEqual(ivr.quick_digit(LEGACY)[0], "6")
+        self.assertEqual(ivr.quick_digit(TRURENU)[0], "3")
+        self.assertEqual(ivr.quick_digit(BYLT_MENU)[0], "1", "'press two to leave a voice mail' must not hide option 1")
+
+    def test_the_keyword_fallback_agrees(self):
+        self.assertEqual(ivr.choose_digit_by_priority(LEGACY).digit, "6")
+        self.assertEqual(ivr.choose_digit_by_priority(TRURENU).digit, "3")
+
+    def test_the_emergency_flag_is_per_option(self):
+        self.assertFalse(ivr.option_is_emergency(LEGACY, "5"))
+        self.assertTrue(ivr.option_is_emergency(LEGACY, "6"))
+        self.assertFalse(ivr.option_is_emergency(TRURENU, "2"))
+        self.assertTrue(ivr.option_is_emergency(TRURENU, "3"))
+
+    def test_unpunctuated_text_is_left_to_the_model(self):
+        self.assertIsNone(ivr.quick_digit("for water damage emergencies please dial 200 press 9 to leave a message dial zero"))
+
+
+class NewShapes(Base):
+    def test_a_name_between_dial_and_the_number_is_still_a_redirect(self):
+        self.assertTrue(ivr.looks_like_alt_contact(GATEWAY).is_alt_contact)
+
+    def test_a_greeting_then_repeated_reactions_is_a_person_or_agent(self):
+        self.assertEqual(ivr.decide_tail(SUNRISE, "human", "Sunrise Water Damage").outcome, "answered")
+        self.assertIsNone(ivr.reactive_greeting("Hi, how can I help you? Please leave a message at the tone. Hello?"))
+
+    def test_a_menu_playing_again_after_a_press_is_not_a_voicemail_or_a_person(self):
+        self.assertTrue(ivr.menu_replayed_after_press(BYLT_REPLAY))
+        self.assertTrue(ivr.menu_replayed_after_press(DIVERSIFIED_TAIL))
+
+    def test_a_person_or_a_real_voicemail_after_a_press_is_not_a_replay(self):
+        self.assertIsNone(ivr.menu_replayed_after_press("Press two for scheduling. Thank you for calling Acme. This is Anna. How can I help you?"))
+        self.assertIsNone(ivr.menu_replayed_after_press("Please leave a message at the tone. Press one for more options."))
+        self.assertIsNone(ivr.menu_replayed_after_press("You have reached Water Pro. To leave a message press one. Please leave your name and number."))
+
+    def test_never_end_a_call_on_a_sentence_still_arriving(self):
+        self.assertFalse(ivr.ends_cleanly("Thank you for calling diverse"))
+        self.assertTrue(ivr.ends_cleanly("Thank you for calling Diversified. How can I help you?"))
+
+
+class AudioEnergy(unittest.TestCase):
+    def test_the_meter_tells_silence_from_sound(self):
+        import random
+        from app import media_stream
+        random.seed(3)
+        b = media_stream.StreamBuffer()
+        b.add_audio(bytes([0xFF]) * 8000)
+        b.add_audio(bytes(random.choice([0x10, 0x90, 0x20, 0xA0]) for _ in range(8000)))
+        self.assertLess(b.energy[0], -60)
+        self.assertGreater(b.energy[1], -30)
+
+
 class Outcomes(Base):
     """server._compute_outcome on a reconstructed call record."""
 
@@ -236,6 +312,20 @@ class Outcomes(Base):
 
     def test_opener_only_call_is_unresolved(self):
         self.assertEqual(server._compute_outcome(self.rec(TOBIN, answered_by="machine_start"))[0], "ivr_unresolved")
+
+    def test_menu_looping_after_the_press_is_unresolved_not_voicemail(self):
+        """Bylt: pressed 1, the menu replayed three times."""
+        pre = "Press one for emergencies. Press two to leave a voice mail."
+        rec = self.rec(pre + " " + BYLT_REPLAY + " " + BYLT_REPLAY, idx=len(pre), digits=["1"])
+        self.assertEqual(server._compute_outcome(rec)[0], "ivr_unresolved")
+
+    def test_a_hold_announcement_on_a_short_call_is_not_a_confirmed_hold(self):
+        """Houzpital: hold language, call over after 30s."""
+        t = "For emergency services, please stay on the line while we connect you. Please hold while we connect you."
+        server.STORE.seconds_since_answered = lambda sid: 30.0
+        self.assertEqual(server._compute_outcome(self.rec(t))[0], "ivr_unresolved")
+        server.STORE.seconds_since_answered = lambda sid: 66.0
+        self.assertEqual(server._compute_outcome(self.rec(t))[0], "extended_hold")
 
     def test_disconnected_number(self):
         self.assertEqual(server._compute_outcome(self.rec(PHOENIX))[0], "disconnected")

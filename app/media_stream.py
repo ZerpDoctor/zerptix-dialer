@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -43,6 +44,16 @@ log = logging.getLogger("dialer.media_stream")
 # before the call ended, versus genuine silence the whole time. Same
 # audio duration billed either way -- Deepgram's real-time pricing is per
 # minute of audio streamed, not per result message returned.
+def _ulaw_to_linear(u: int) -> int:
+    u = ~u & 0xFF
+    t = ((u & 0x0F) << 3) + 0x84
+    t <<= (u & 0x70) >> 4
+    return (0x84 - t) if (u & 0x80) else (t - 0x84)
+
+
+_ULAW = [_ulaw_to_linear(i) for i in range(256)]
+
+
 _DEEPGRAM_WS_URL = (
     "wss://api.deepgram.com/v1/listen"
     "?model=nova-3&language=en-US&encoding=mulaw&sample_rate=8000"
@@ -93,6 +104,13 @@ class StreamBuffer:
     last_activity: float | None = None   # wall time of the last non-empty interim/final result
     first_text_at: float | None = None   # wall time of the first non-empty result
     frames: int = 0                      # audio frames forwarded to Deepgram
+    # Loudness of the audio we forward, one dBFS integer per second (first 90s). Words are
+    # all a transcript can show; this shows whether there was SOUND. 2026-10-01: 10 of 100
+    # calls were AMD "human" with ~790 audio frames and zero text -- without this there is
+    # no way to tell a silent line from speech Deepgram failed to recognise.
+    energy: list = field(default_factory=list)
+    _e_sum: float = 0.0
+    _e_n: int = 0
     results: int = 0                     # non-empty transcript results received
 
     def note_activity(self) -> None:
@@ -121,6 +139,20 @@ class StreamBuffer:
             has_interim = bool(self.interim.strip())
         return has_interim and age < max(quiet_seconds * 2.5, 2.5)
 
+    def add_audio(self, payload: bytes) -> None:
+        for b in payload:
+            v = _ULAW[b]
+            self._e_sum += v * v
+        self._e_n += len(payload)
+        while self._e_n >= 8000 and len(self.energy) < 90:       # 8000 mu-law bytes = 1s at 8kHz
+            rms = math.sqrt(self._e_sum / self._e_n)
+            self.energy.append(int(20 * math.log10(max(rms, 1.0) / 32768.0)))
+            self._e_sum = 0.0
+            self._e_n = 0
+
+    def energy_note(self) -> str:
+        return "audio dBFS/s: " + " ".join(str(x) for x in self.energy[:30]) if self.energy else ""
+
     def stats_note(self, answered_at: float | None) -> str:
         """Compact stream evidence for the Calls notes -- so a blank transcript
         can be told apart from silence: no connection, connected but no audio,
@@ -131,7 +163,9 @@ class StreamBuffer:
             return "stream: never connected"
         first = ("none" if self.first_text_at is None
                  else f"+{self.first_text_at - (answered_at or self.connected_at):.0f}s")
-        return f"stream: connected, {self.frames} audio frames, {self.results} text results, first text {first}"
+        base = f"stream: connected, {self.frames} audio frames, {self.results} text results, first text {first}"
+        e = self.energy_note()
+        return f"{base}; {e}" if e else base
 
     def append(self, text: str) -> None:
         if not text.strip():
@@ -284,9 +318,11 @@ def handle_signalwire_stream(ws, call_sid: str) -> None:
                 if not payload_b64:
                     continue
                 try:
-                    dg_ws.send(base64.b64decode(payload_b64))
+                    raw_audio = base64.b64decode(payload_b64)
+                    dg_ws.send(raw_audio)
                     frames_forwarded += 1
                     buf.frames = frames_forwarded
+                    buf.add_audio(raw_audio)
                 except Exception as e:  # noqa: BLE001
                     log.warning("Deepgram send failed for call_sid=%s: %s", call_sid, e)
                     break

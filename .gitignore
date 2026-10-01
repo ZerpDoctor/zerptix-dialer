@@ -20,3 +20,6 @@ audit_data.txt
 tests/golden/cases.json
 tests/golden/haiku_cache.json
 tests/golden/baseline.json
+tests/golden/archived_rows.json
+tests/golden/archived_header.json
+tests/golden/reviewed_extra.json

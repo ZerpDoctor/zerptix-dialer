@@ -440,7 +440,8 @@ def _compute_outcome(rec) -> tuple[str, str]:
         # sentences. Real incident 2026-09-29: BoneDry Services logged answered
         # from "...press five for billing. Thank you for calling Bone Dry
         # Services."
-        _mro = ivr.menu_recording_only(rec.transcript_accum[rec.transcript_at_last_digit:])
+        _raw_post = rec.transcript_accum[rec.transcript_at_last_digit:]
+        _mro = ivr.menu_replayed_after_press(_raw_post) or ivr.menu_recording_only(_raw_post)
         if _mro:
             return "ivr_unresolved", f"tail: {_mro}"
 
@@ -523,6 +524,15 @@ def _compute_outcome(rec) -> tuple[str, str]:
         if rec.ivr_detected:
             return "ivr_unresolved", note or "post-menu audio inconclusive; check recording"
         return "unknown", note or "call completed; audio inconclusive"
+    if decision.outcome == "extended_hold":
+        # extended_hold means we waited out the hold budget and nobody came, which
+        # locks the company out for the quarter. A call that ended well short of it
+        # (Houzpital, 2026-10-01: a hold announcement, call over after 30s) has not
+        # shown that. 0.0 means the call length is unknown, where the verdict stands.
+        elapsed = STORE.seconds_since_answered(rec.call_sid)
+        if 0.0 < elapsed < CFG.ivr_hold_budget_seconds - 10:
+            return "ivr_unresolved", (note + "; " if note else "") + (
+                f"hold announcement heard, but the call ended after {int(elapsed)}s, before the hold budget was used")
     return decision.outcome, note
 
 
@@ -571,7 +581,7 @@ def _build_row(rec, outcome: str, note: str) -> dict:
         "answered_by": rec.answered_by or "",
         "twilio_call_status": rec.call_status or "",
         "call_sid": rec.call_sid,
-        "duration_sec": request.form.get("CallDuration", ""),
+        "duration_sec": request.form.get("CallDuration", "") or rec.call_duration,
         "recording_url": rec.recording_url or "",
         "notes": "; ".join(notes),
         "ivr_detected": "yes" if rec.ivr_detected else "no",
@@ -714,7 +724,16 @@ def _resolve(call_sid: str, hangup: bool = True, recovered: bool = False) -> Non
                                          else "ended by: far end / network (call already over)"))
     rec = STORE.snapshot(call_sid)
     outcome, note = _compute_outcome(rec)
-    _write_sheet_with_retry(_build_row(rec, outcome, note))
+    _row = _build_row(rec, outcome, note)
+    _write_sheet_with_retry(_row)
+    # The terminal status callback may have arrived while the row was being built.
+    _late = STORE.get(call_sid)
+    if (_late is not None and not _row.get("duration_sec") and _late.call_duration
+            and (_late.call_status or "").lower() in _TERMINAL_CALL_STATUSES):
+        try:
+            google_sheets.backfill_call_status(call_sid, _late.call_status, _late.call_duration)
+        except Exception as e:  # noqa: BLE001 - best effort only
+            log.warning("Late status backfill failed for %s: %s", call_sid, e)
     STORE.update(call_sid, phase="resolved")
     log.info(
         "LOGGED call_sid=%s outcome=%s number=%s ivr=%s digits=%s classifier=%s flagged=%s",
@@ -1284,6 +1303,7 @@ def ivr_turn(stage: str, level: int) -> Response:
         # pattern this codebase already stopped trusting at three other
         # resolution sites, just never patched here.
         if (early.outcome == "answered" and early.classifier != "amd_fallback"
+                and ivr.ends_cleanly(segment)
                 and not ivr.mentions_incoming_menu(segment)):
             log.info("IVR early-resolve call_sid=%s: confident answered on turn %d (%s)",
                       call_sid, rec.gather_count, early.reasoning)
@@ -1306,6 +1326,7 @@ def ivr_turn(stage: str, level: int) -> Response:
         # confirm-gather window, it never hangs up), but no reason to trust
         # a bare AMD guess here either when it's not trusted anywhere else.
         if (early.outcome == "answered" and early.classifier != "amd_fallback"
+                and ivr.ends_cleanly(segment)
                 and not ivr.mentions_incoming_menu(segment)):
             return _twiml(_gather("menu", level, CFG.ivr_confirm_gather_seconds))
 
@@ -1355,6 +1376,7 @@ def _conclude_not_menu(call_sid: str, rec) -> Response:
             # is the bug, not the confidence itself. Keep listening at
             # least one more cycle instead.
             if (decision.outcome in ("answered", "voicemail", "disconnected")
+                    and (decision.outcome != "answered" or ivr.ends_cleanly(transcript))
                     and decision.classifier != "amd_fallback"
                     and not ivr.mentions_incoming_menu(transcript)):
                 _resolve(call_sid)
@@ -1384,7 +1406,7 @@ def _ivr_tail(call_sid: str, rec) -> Response:
     # chance for a human to actually join. Per spec, extended_hold is ONLY
     # reached by exhausting the master timer with no real resolution.
     tail_class = ivr.classify_tail(tail) if tail else "unknown"
-    conclusive = tail_class in ("answered", "voicemail")
+    conclusive = tail_class == "voicemail" or (tail_class == "answered" and ivr.ends_cleanly(tail))
     over_budget = _budget_exhausted(call_sid, rec, margin=3)
     if conclusive:
         _resolve(call_sid)
@@ -1507,6 +1529,8 @@ def webhook_status() -> Response:
     # STORE.register() at dial time, so this stays False for it.
     recovered = STORE.get(call_sid) is None
     STORE.update(call_sid, call_status=call_status, to_number=request.form.get("To") or None)
+    if duration:
+        STORE.update(call_sid, call_duration=duration)
     rec = STORE.get(call_sid)
     log.info(
         "Status callback call_sid=%s CallStatus=%s phase=%s",
@@ -1518,10 +1542,20 @@ def webhook_status() -> Response:
         # arrives after we resolved from a faster IVR/AMD/gatekeeping signal
         # -- backfill it into the already-logged row instead of dropping it.
         if call_status.lower() in _TERMINAL_CALL_STATUSES:
-            try:
-                google_sheets.backfill_call_status(call_sid, call_status, duration)
-            except Exception as e:  # noqa: BLE001 - best effort only
-                log.warning("Status backfill failed for %s: %s", call_sid, e)
+            # rec.logged is set the instant _resolve() CLAIMS the call, before the
+            # row is actually written (hang-up + Sheets write take 1-3s). For a call
+            # WE hang up, this callback lands in exactly that window: the row is not
+            # there yet, the backfill finds nothing and used to give up silently,
+            # leaving duration blank and the status stuck at "answered" (4 rows on
+            # 2026-10-01: Houzpital, Freedom Services, Icon Property Rescue, National
+            # Fire & Water). Retry until the row exists.
+            for attempt in range(6):
+                try:
+                    if google_sheets.backfill_call_status(call_sid, call_status, duration):
+                        break
+                except Exception as e:  # noqa: BLE001 - best effort only
+                    log.warning("Status backfill failed for %s: %s", call_sid, e)
+                time.sleep(1.5)
         return Response("", status=204)
 
     s = call_status.lower()

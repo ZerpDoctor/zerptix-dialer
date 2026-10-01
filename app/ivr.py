@@ -525,18 +525,23 @@ _EMERGENCY_SERVICES_NUMBER = re.compile(r"\b(911|nine one one)\b")
 
 
 def _spoken_number_after_call_verb(t: str) -> bool:
-    """True if call/text/dial/reach is followed by a run of digits (spoken or
-    numeric) long enough to be a phone number, so menu options like "dial 3"
-    or "press one" never qualify."""
+    """True if call/text/dial/reach is followed -- allowing a short name or "at" in
+    between -- by a run of digits (spoken or numeric) long enough to be a phone
+    number. Menu options like "dial 3" or "press one" never qualify. Real
+    incident 2026-10-01: Gateway Restoration, "If your matter is urgent, please
+    dial John Robbins at seven three four six ..." (the name broke the match)."""
+    def is_digit(tok: str) -> bool:
+        return tok.isdigit() or tok in _SPOKEN_DIGIT_TOKENS
+
     for m in _ALT_CALL_VERB.finditer(t):
+        toks = re.findall(r"[a-z]+|\d+", t[m.end():m.end() + 160])
+        i = 0
+        while i < len(toks) and i <= 5 and not is_digit(toks[i]):
+            i += 1
         digits = 0
-        for tok in re.findall(r"[a-z]+|\d+", t[m.end():m.end() + 90]):
-            if tok.isdigit():
-                digits += len(tok)
-            elif tok in _SPOKEN_DIGIT_TOKENS:
-                digits += 1
-            else:
-                break
+        while i < len(toks) and is_digit(toks[i]):
+            digits += len(toks[i]) if toks[i].isdigit() else 1
+            i += 1
         if digits >= 7:
             return True
     return False
@@ -676,9 +681,15 @@ def choose_digit_by_priority(transcript: str) -> DigitPick:
         return DigitPick(None, "no numbered options could be parsed from the menu", True)
 
     t = (transcript or "").lower()
+    precise = _is_punctuated(t)
+    if precise:
+        for digit, _label in options:
+            if _clause_emergency(_option_clause(t, digit)[0]):
+                return DigitPick(digit, f"emergency/after-hours option ({digit})", True, is_emergency=True)
 
-    # 1. Emergency / after-hours anywhere in the menu.
-    for digit, label in options:
+    # 1. Emergency / after-hours anywhere in the menu (unpunctuated text only; on
+    # punctuated text the option's own clause was judged above).
+    for digit, label in ([] if precise else options):
         if any(w in label for w in _EMERGENCY_WORDS):
             return DigitPick(digit, f"emergency/after-hours option ('{label.strip()}')", True,
                               is_emergency=True)
@@ -690,7 +701,7 @@ def choose_digit_by_priority(transcript: str) -> DigitPick:
     # press zero.") picked 0 -- the emergency option was never seen as such;
     # Serviclean pressed the right digit by luck but flagged it non-emergency.
     after = dict(options)
-    for digit, before in _before_labels(t):
+    for digit, before in ([] if precise else _before_labels(t)):
         if _is_message_option(after.get(digit, "")):
             continue     # "press 9 to leave a message" is never the live line, whatever text precedes it
         if any(w in before for w in _EMERGENCY_WORDS) and not _NEGATED_EMERGENCY.search(before):
@@ -742,13 +753,38 @@ def _option_sentence(t: str, digit: str) -> str:
     return ""
 
 
-def _option_sentence_complete(t: str, digit: str) -> bool:
-    """True once the sentence containing this digit's "press N" has ended (a
-    terminator follows it in the text heard so far)."""
-    for m in _OPT_ANCHOR.finditer(t):
-        if m.group("d1") and _norm_digit(m.group("d1")) == digit:
-            return any(c in t[m.end():] for c in ".?!")
-    return False
+def _is_punctuated(t: str) -> bool:
+    return bool(re.search(r"[.?!]", t or ""))
+
+
+def _option_clause(t: str, digit: str) -> tuple[str, bool]:
+    """(the words that describe this digit's option, whether that text is complete).
+
+    The sentence that contains the "press N". When one sentence holds several
+    "press" instructions ("Press one for emergencies, press two to leave a
+    message") each option owns the text from its own "press" up to the next one.
+    Real incidents 2026-10-01: Legacy Restoration ("Orlando, press five. If this
+    is an emergency, please press six.") and TruRenu ("For our administrative team,
+    press two. For emergency services, press three.") -- the label-after-the-digit
+    logic gave the emergency words to the PREVIOUS digit and we pressed 5 and 2."""
+    anchors = [m for m in _OPT_ANCHOR.finditer(t) if m.group("d1")]
+    for i, m in enumerate(anchors):
+        if _norm_digit(m.group("d1")) != digit:
+            continue
+        sent_start = max(t.rfind(c, 0, m.start()) for c in ".?!") + 1
+        ends = [x for x in (t.find(c, m.end()) for c in ".?!") if x >= 0]
+        sent_end = min(ends) if ends else len(t)
+        in_sent = [a for a in anchors if sent_start <= a.start() < sent_end]
+        if len(in_sent) <= 1:
+            return t[sent_start:sent_end], bool(ends)
+        nxt = next((a.start() for a in in_sent if a.start() > m.start()), sent_end)
+        return t[m.start():nxt], bool(ends) or nxt < sent_end
+    return "", False
+
+
+def _clause_emergency(clause: str) -> bool:
+    return (any(w in clause for w in _EMERGENCY_WORDS) and not _NEGATED_EMERGENCY.search(clause)
+            and not any(w in clause for w in _NOT_A_LIVE_OPTION))
 
 
 def quick_digit(transcript: str, require_complete: bool = False) -> tuple[str, str, bool] | None:
@@ -759,45 +795,47 @@ def quick_digit(transcript: str, require_complete: bool = False) -> tuple[str, s
     connects you to a person ("press one to be connected", "press one for the
     next available customer service representative"). Everything else --
     several options with no emergency one, voicemail menus -- goes to the model.
-    Real incidents 2026-09-30: the model call alone took ~3.4s, which, added
-    to the poll and stability waits, made presses miss the phone system's input
-    window (911 Restoration, RestoreCo, Property Craft, SERVPRO East Nashville)."""
+    Each option is judged by ITS OWN clause (_option_clause), and only on
+    punctuated (Deepgram-era) text; unpunctuated text goes to the model."""
     t = (transcript or "").lower().strip()
-    if not t:
+    if not t or not _is_punctuated(t):
         return None
     if any(p in t for p in _VOICEMAIL_CONTROL_PHRASES) or any(p in t for p in _TAIL_VOICEMAIL_STRONG_IDENTITY):
         return None
     # Only options introduced by an explicit press verb count: a bare
     # "<digit> to/for" also matches ordinary speech -- "available twenty four
     # SEVEN TO assist you" parsed as option 7 (S And S Repair, 2026-09-26).
-    press_digits = {_norm_digit(m.group("d1")) for m in _OPT_ANCHOR.finditer(t) if m.group("d1")}
-    options = [(d, lab) for d, lab in parse_options(t) if d in press_digits]
-    if not options:
+    digits = []
+    for m in _OPT_ANCHOR.finditer(t):
+        d = _norm_digit(m.group("d1") or "") if m.group("d1") else None
+        if d and d not in digits:
+            digits.append(d)
+    if not digits:
         return None
-    for digit, _label in options:
-        if option_is_emergency(t, digit):
-            if any(w in _option_sentence(t, digit) for w in _NOT_A_LIVE_OPTION):
-                return None          # "press 2 to leave an emergency message" is not the live line
-            if require_complete and not _option_sentence_complete(t, digit):
+    for digit in digits:
+        clause, complete = _option_clause(t, digit)
+        if _clause_emergency(clause):
+            if require_complete and not complete:
                 return None
             return digit, f"the menu names {digit} as its emergency option", True
-    if len(options) == 1:
-        digit = options[0][0]
-        sent = _option_sentence(t, digit)
-        if any(w in sent for w in _CONNECT_WORDS) and not any(w in sent for w in _NOT_A_LIVE_OPTION):
-            if require_complete and not _option_sentence_complete(t, digit):
+    if len(digits) == 1:
+        clause, complete = _option_clause(t, digits[0])
+        if (any(w in clause for w in _CONNECT_WORDS) and not any(w in clause for w in _NOT_A_LIVE_OPTION)):
+            if require_complete and not complete:
                 return None
-            return digit, f"the only option, {digit}, connects to a person", False
+            return digits[0], f"the only option, {digits[0]}, connects to a person", False
     return None
 
 
 def option_is_emergency(transcript: str, digit: str | None) -> bool:
     """True if the menu itself describes `digit` as an emergency/after-hours
-    option -- wording after the digit ("press 1 for emergencies") or before
-    it ("For emergency service needs, press one")."""
+    option. Punctuated text is judged by the option's own clause; older
+    unpunctuated text falls back to the label logic."""
     if not digit:
         return False
     t = (transcript or "").lower()
+    if _is_punctuated(t):
+        return _clause_emergency(_option_clause(t, digit)[0])
     for d, label in parse_options(t):
         if d == digit and any(w in label for w in _EMERGENCY_WORDS) and not _NEGATED_EMERGENCY.search(label):
             return True
@@ -1006,6 +1044,65 @@ _HUMAN_MARKER = re.compile(
     r"what can i do|hello|hi there|are you there|can you hear me)\b")
 
 
+_STRONG_VOICEMAIL_GREETING = (
+    "at the tone", "after the tone", "after the beep", "at the beep", "leave your name",
+    "leave a detailed message", "unable to take your call", "can't take your call", "not available to take",
+    "record your message", "the voicemail of", "voice mailbox",
+)
+
+
+def menu_replayed_after_press(raw_tail: str) -> str | None:
+    """Reason if what was heard AFTER the digit press is just a menu playing (again): at
+    least one "press N" and nothing after the last one that only a person -- or a
+    voicemail greeting -- would say. A menu's own wording ("press two to leave a voice
+    mail") is not a voicemail. Real incidents 2026-10-01: Bylt (pressed 1, the menu
+    looped three times, logged voicemail) and Diversified Property Services (pressed
+    2, heard the extension prompt, logged answered from a cut-off "...calling diverse")."""
+    t = (raw_tail or "").lower()
+    if any(p in t for p in _STRONG_VOICEMAIL_GREETING):
+        return None
+    last = None
+    for m in _OPT_ANCHOR.finditer(t):
+        if m.group("d1"):
+            last = m
+    if last is None:
+        return None
+    after = t[last.end():]
+    if _HUMAN_MARKER.search(after) or "?" in after:
+        return None
+    return "the menu was playing again after the press; no person and no voicemail greeting was heard"
+
+
+_OFFER_HELP = re.compile(r"\b(how (can|may) (i|we) (help|assist|direct)|can i help|may i help|what can i do)\b")
+_REACTIVE = re.compile(r"\b(hello|hi there|are you there|can you hear me|anyone there|anybody)\b")
+
+
+def reactive_greeting(transcript: str) -> str | None:
+    """Reason if the call is a greeting that OFFERS HELP followed by repeated
+    reaction to silence ("How can I help you? Hello? Hello? Can you hear me?"). A
+    recording does not do that; a person -- or an answering agent -- does. Real
+    incident 2026-10-01: Sunrise Water Damage ("This AI speaking. How can I help
+    you? Hello? Hello? Hello? Can you hear me?") was left `unknown`."""
+    t = (transcript or "").lower()
+    if any(p in t for p in _STRONG_VOICEMAIL_GREETING):
+        return None
+    m = _OFFER_HELP.search(t)
+    if not m:
+        return None
+    after = t[m.end():]
+    if len(_REACTIVE.findall(after)) >= 2:
+        return "a greeting offering help, then repeated reactions to silence -- a responsive person or agent"
+    return None
+
+
+def ends_cleanly(s: str) -> bool:
+    """True if the text ends at a sentence boundary (or is empty). Used before ending
+    a call on a read of speech that may still be arriving -- Diversified Property
+    Services was hung up on "Thank you for calling diverse"."""
+    s = (s or "").rstrip()
+    return not s or s[-1] in ".?!\"'"
+
+
 def menu_recording_only(transcript: str) -> str | None:
     """Reason string if everything heard is a menu RECORDING -- two or more
     "press N" options and nothing after the last option that only a person
@@ -1169,6 +1266,10 @@ def decide_tail(transcript: str, answered_by: str | None, company_name: str = ""
     ms = menu_start_reason(transcript)
     if ms:
         return TailDecision("unknown", "menu_start", ms, False)
+
+    rg = reactive_greeting(transcript)
+    if rg:
+        return TailDecision("answered", "keyword", rg, amd_guess == "voicemail")
 
     ph = post_hold_name_greeting(transcript, company_name)
     if ph:

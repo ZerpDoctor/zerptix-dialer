@@ -26,6 +26,9 @@ from app import google_sheets as gs  # noqa: E402
 from app.config import CFG  # noqa: E402
 
 OUT = Path("tests/golden/cases.json")
+# Extra reviewed calls outside the date window (rows a person read in full from later batches).
+_EXTRA = Path("tests/golden/reviewed_extra.json")
+EXTRA_REVIEWED = set(json.loads(_EXTRA.read_text())) if _EXTRA.exists() else set()
 # UTC window: 2026-09-29 evening batch .. end of 2026-09-30 (the second batch and all manual tests)
 START, END = "2026-09-29T15:00", "2026-10-01T00:00"
 # Franchise numbers dialed manually on 2026-09-30 (fresh lookups, never Queue rows)
@@ -56,9 +59,19 @@ def main() -> None:
         last_cp[d["call_sid"]] = d
 
     cases, skipped = [], 0
-    for x in calls[1:]:
-        r = dict(zip(h, x + [""] * (len(h) - len(x))))
-        if not (START <= r["logged_at_iso"] < END):
+    rows = [dict(zip(h, x + [""] * (len(h) - len(x)))) for x in calls[1:]]
+    # Rows deleted from the sheet on purpose (the 2026-09-30 franchise / own-cell test calls) are kept
+    # locally in archived_rows.json so these person-checked calls are not lost from the golden set.
+    arch, arch_h = Path("tests/golden/archived_rows.json"), Path("tests/golden/archived_header.json")
+    if arch.exists() and arch_h.exists():
+        ah = json.loads(arch_h.read_text())
+        have = {r["call_sid"] for r in rows}
+        for a in json.loads(arch.read_text()):
+            rr = dict(zip(ah, a["values"] + [""] * (len(ah) - len(a["values"]))))
+            if rr["call_sid"] not in have:
+                rows.append(rr)
+    for r in rows:
+        if not (START <= r["logged_at_iso"] < END) and r["call_sid"] not in EXTRA_REVIEWED:
             continue
         outcome = r["outcome"]
         if outcome in ("busy", "no_answer", "disconnected") and not r["ivr_transcript"].strip():
@@ -76,8 +89,10 @@ def main() -> None:
         if digits and press_idx is None:
             replayable = False            # pressed a digit, no trustworthy position of the press
         company = r["company_name"] or FRANCHISE.get(r["phone_e164"], "")
+        if company == "TruRenu":
+            replayable = False            # wrong digit pressed (2 for 3): a press-choice failure, tested in test_classification_rules
         cases.append({
-            "id": r["call_sid"][:8], "tier": "reviewed-batch" if r["company_name"] else "franchise-test",
+            "id": r["call_sid"][:8], "tier": ("reviewed-batch3" if r["call_sid"] in EXTRA_REVIEWED else "reviewed-batch") if r["company_name"] else "franchise-test",
             "company": company, "phone": r["phone_e164"], "answered_by": r["answered_by"],
             "transcript": r["ivr_transcript"], "digits_sent": digits, "press_idx": press_idx,
             "ivr_detected": flags["ivr_detected"] or bool(digits), "hit_time_cap": flags["hit_time_cap"],

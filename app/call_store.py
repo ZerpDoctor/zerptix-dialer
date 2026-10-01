@@ -30,6 +30,8 @@ class CallRecord:
     placed_at: float = field(default_factory=time.time)
     answered_by: str | None = None      # buffered AMD AnsweredBy
     call_status: str | None = None
+    call_duration: str = ""             # CallDuration from the terminal status callback, kept even if it
+    # arrives before the Calls row is written (see server._resolve / webhook_status)
     recording_url: str | None = None
     logged: bool = False
 
