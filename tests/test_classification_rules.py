@@ -347,3 +347,18 @@ class AiReceptionistIsAnswered(unittest.TestCase):
     def test_a_plain_name_prompt_is_still_gatekeeping(self):
         t = "Please state your full name and spell your last name, and the reason for your call."
         self.assertTrue(ivr.looks_like_gatekeeping(t).is_gatekeeping)
+
+
+class PressAnyKey(unittest.TestCase):
+    """Reactic Restoration 2026-10-01: "press any key to be connected" x3, nothing pressed, logged voicemail."""
+    T = ("Thank you for calling Reactic Restoration. Please press any key to be connected with one of our team "
+         "members. Thank you for calling Reactic Restoration. Please press any key to be connected with one of our team members.")
+
+    def test_it_is_a_menu_and_presses_one(self):
+        self.assertTrue(ivr.looks_like_menu(self.T).is_menu)
+        d = ivr.decide_digit(self.T)
+        self.assertEqual((d.is_menu, d.digit), (True, "1"))
+
+    def test_a_voicemail_box_is_not(self):
+        self.assertIsNone(ivr.any_key_digit("Please leave a message at the tone. When you have finished recording, press any key to be connected to the operator."))
+        self.assertIsNone(ivr.any_key_digit("Press any key to continue."))

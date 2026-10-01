@@ -368,6 +368,26 @@ _VERIFY_PRESS = re.compile(
     r"\b(?:pressing|press|enter|dial)\s+(?:the\s+)?(?:number\s+)?(" + _DIGIT_TOKEN + r")\b", re.I)
 
 
+_ANY_KEY = re.compile(r"\bpress\s+any\s+(key|button|digit|number)\b", re.I)
+
+
+def any_key_digit(transcript: str) -> str | None:
+    """"1" when the line says "press any key to be connected ..." -- any key
+    works, and with no digit in the words nothing else saw a menu. Real incident
+    2026-10-01: Reactic Restoration ("Please press any key to be connected with
+    one of our team members", read three times) was logged voicemail with nothing
+    pressed. Only a sentence that also promises a person counts, and a voicemail
+    box's own controls never do."""
+    t = (transcript or "").lower()
+    if any(p in t for p in _VOICEMAIL_CONTROL_PHRASES) or any(p in t for p in _TAIL_VOICEMAIL_STRONG_IDENTITY):
+        return None
+    for sent in re.split(r"[.?!]", t):
+        if (_ANY_KEY.search(sent) and any(w in sent for w in _CONNECT_WORDS + ("team member", "connected"))
+                and not any(w in sent for w in _NOT_A_LIVE_OPTION)):
+            return "1"
+    return None
+
+
 def human_verification_digit(transcript: str) -> str | None:
     """The digit a call-screening "verify you are human" prompt asks for, else
     None. Real incident 2026-09-29: Rapid Response Restoration's line plays
@@ -390,6 +410,8 @@ def looks_like_menu(transcript: str) -> MenuLook:
         return MenuLook(False, 0, [])
     if human_verification_digit(t):
         return MenuLook(True, 99, ["human-verification-screen"])
+    if any_key_digit(t):
+        return MenuLook(True, 99, ["press-any-key-to-be-connected"])
 
     # Never treat a voicemail box's own recording-control menu as a
     # navigable business IVR, even though it structurally matches
@@ -901,6 +923,8 @@ def decide_digit(transcript: str) -> Decision:
     if screen_digit:
         return Decision(True, screen_digit, "keyword", False,
                         f"call-screening prompt asks to verify human by pressing {screen_digit}")
+    if any_key_digit(transcript):
+        return Decision(True, "1", "keyword", False, "rule: the line says press any key to be connected")
     quick = quick_digit(transcript)
     if quick:
         return Decision(True, quick[0], "keyword", False, f"rule: {quick[1]}", is_emergency_route=quick[2])
