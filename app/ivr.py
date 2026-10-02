@@ -867,6 +867,12 @@ def _option_clause(t: str, digit: str) -> tuple[str, bool]:
     return "", False
 
 
+_SOLE_NOT_THE_WAY = re.compile(
+    r"\b(message|voicemail|voice mail|mailbox|record\w*|repeat|billing|payments?|pay|account\w*|employ\w*|career\w*|jobs?|"
+    r"spanish|espanol|directory|extension|sales|marketing|vendors?|invoice\w*|hear|again|menu|previous|return|"
+    r"hang up|disconnect|opt out|unsubscribe)\b")
+
+
 def _is_bare_press(clause: str) -> bool:
     """A sentence that is only "press one" -- no label of its own."""
     rest = _OPT_ANCHOR.sub(" ", clause.lower())
@@ -934,6 +940,14 @@ def quick_digit(transcript: str, require_complete: bool = False) -> tuple[str, s
             if require_complete and not complete:
                 return None
             return digits[0], f"the only option, {digits[0]}, connects to a person", False
+        # A single option that is not a message / repeat / billing / directory is the only way forward.
+        # These IVRs give up after ~5s of silence: Dry Guy Restoration ("Press one for the Dry Guy
+        # Restoration.") and Phoenix Flood And Fire ("Press one to continue to our main line", looped
+        # 3x) both hung up before our model-chosen press landed at +11s / +17s (2026-10-02).
+        if clause and not _SOLE_NOT_THE_WAY.search(clause) and not any(w in clause for w in _NOT_A_LIVE_OPTION):
+            if require_complete and not complete:
+                return None
+            return digits[0], f"the only option, {digits[0]}, is the way forward", False
     # (3) no emergency option named: the first option for a caller who has water / fire / mold damage
     for digit in digits:
         clause, complete = _option_clause(t, digit)

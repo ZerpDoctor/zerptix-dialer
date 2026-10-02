@@ -524,3 +524,20 @@ class EarlyPressLeavesTheRestOfTheMenu(unittest.TestCase):
     def test_the_leftover_of_an_interrupted_menu_is_not_a_replay(self):
         # Quality Cleaning And Restoration 2026-10-02: pressed 1 mid-menu; what followed was the rest of that menu, then a hold
         self.assertIsNone(ivr.menu_replayed_after_press(" press two or Your call is important to us. We will be with you shortly."))
+
+
+class SoleOptionMenus(unittest.TestCase):
+    """2026-10-02: Dry Guy and Phoenix Flood And Fire hung up on us ~5s after a one-option prompt; we pressed at +11s/+17s."""
+
+    def test_a_single_option_is_pressed_as_soon_as_its_sentence_is_complete(self):
+        for t in ("Thank you for calling the Dry Guy Restoration. Press one for the Dry Guy Restoration.",
+                  "Thank you for calling. Press one to continue to our main line. Thank you for calling. Press one to continue to our main line."):
+            d = ivr.quick_digit(t, require_complete=True)
+            self.assertEqual(d[0], "1", t[:40])
+
+    def test_a_single_option_that_is_not_the_way_forward_is_left_alone(self):
+        for t in ("Please press one to leave a message or dial the extension you are trying to reach.",
+                  "To hear this message again, press one.",
+                  "For billing questions, press one.",
+                  "To repeat this menu, press one."):
+            self.assertIsNone(ivr.quick_digit(t, require_complete=True), t[:40])
