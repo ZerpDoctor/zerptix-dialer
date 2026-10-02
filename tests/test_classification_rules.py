@@ -518,3 +518,9 @@ class CapWithMenuReplaying(Outcomes):
         rec = self.rec(t, idx=len(t), digits=["1"])
         rec.hit_time_cap = True
         self.assertEqual(server._compute_outcome(rec)[0], "extended_hold")
+
+
+class EarlyPressLeavesTheRestOfTheMenu(unittest.TestCase):
+    def test_the_leftover_of_an_interrupted_menu_is_not_a_replay(self):
+        # Quality Cleaning And Restoration 2026-10-02: pressed 1 mid-menu; what followed was the rest of that menu, then a hold
+        self.assertIsNone(ivr.menu_replayed_after_press(" press two or Your call is important to us. We will be with you shortly."))

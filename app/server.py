@@ -398,7 +398,11 @@ def _compute_outcome(rec) -> tuple[str, str]:
         if rec.digits_sent:
             _raw_cap = rec.transcript_accum[rec.transcript_at_last_digit:]
             _replay = ivr.menu_replayed_after_press(_raw_cap) or ivr.menu_recording_only(_raw_cap)
-            if _replay:
+            # An early press leaves the REST of the interrupted menu in the post-press text ("...press
+            # two or Your call is important to us" -- Quality Cleaning, a real hold). Only a menu that
+            # played again in full -- several options, or the same option twice -- is a replay.
+            _opts = {m.group("d1") for m in ivr._OPT_ANCHOR.finditer(_raw_cap.lower()) if m.group("d1")}
+            if _replay and (len(_opts) >= 2 or ivr.menu_repeats(_raw_cap)):
                 return "ivr_unresolved", _replay + "; check recording"
         if getattr(rec, "ring_seen", False) and not cap_transcript.strip() and not rec.digits_sent:
             return "unknown", "still ringing when the budget ran out (ring pattern, no text) -- nobody picked up; not a miss claim"

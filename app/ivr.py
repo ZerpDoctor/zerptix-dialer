@@ -1181,10 +1181,20 @@ def menu_replayed_after_press(raw_tail: str) -> str | None:
     if any(p in t for p in _STRONG_VOICEMAIL_GREETING):
         return None
     last = None
+    digits = set()
     for m in _OPT_ANCHOR.finditer(t):
         if m.group("d1"):
             last = m
+            digits.add(m.group("d1"))
     if last is None:
+        return None
+    # An early press (while the menu is still playing) leaves the REST of that menu in the text after
+    # the press: " press two or Your call is important to us. We will be with you shortly." is a
+    # hold, not a menu playing again (Quality Cleaning And Restoration, 2026-10-02). That leftover
+    # opens right on a "press N" with no greeting before it; a replay starts over with its greeting
+    # (Diversified: "Thank you for calling ... please press one ...") or shows several options.
+    first = _OPT_ANCHOR.search(t)
+    if first and first.start() <= 3 and len(digits) < 2 and not menu_repeats(t):
         return None
     after = t[last.end():]
     if _HUMAN_MARKER.search(after) or "?" in after:
