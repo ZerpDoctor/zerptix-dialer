@@ -37,7 +37,10 @@ _DIGIT_WORDS = {
     "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
     "pound": "#", "hash": "#", "star": "*", "asterisk": "*",
 }
-_DIGIT_TOKEN = r"(?:[0-9]|zero|one|two|three|four|five|six|seven|eight|nine|pound|hash|star)"
+# "dial two hundred" (R And S Restores, 2026-10-02: the emergency line is extension 200 and we pressed 2).
+# Only whole hundreds -- never an arbitrary 3-digit number, or "dial 911" would become an option.
+_DIGIT_TOKEN = (r"(?:(?:one|two|three|four|five|six|seven|eight|nine)\s+hundred|[1-9]00|[0-9]"
+                r"|zero|one|two|three|four|five|six|seven|eight|nine|pound|hash|star)")
 _PRESS_VERB = r"(?:press|select|dial|enter|push|choose|hit|key in)"
 
 # Structural patterns: a press-verb + digit, or a digit tied to "for"/"to".
@@ -88,6 +91,9 @@ _VOICEMAIL_CONTROL_PHRASES = [
     "special delivery options", "general mailbox is not available",
     "mailbox is not available", "to review your recording",
     "to listen to your message", "re-record your message",
+    # Salem Steamer 2026-10-02: "Mailbox is full. To send an SMS notification, press five" -- we
+    # pressed 5 and #, which texts the box owner. A full / carrier mailbox is never a menu.
+    "mailbox is full", "mailbox full", "sms notification", "to send an sms",
 ]
 
 # A transcript that explicitly announces a menu is about to be read out, but
@@ -556,6 +562,29 @@ _SPOKEN_DIGIT_TOKENS = {"zero", "oh", "one", "two", "three", "four", "five", "si
 _EMERGENCY_SERVICES_NUMBER = re.compile(r"\b(911|nine one one)\b")
 
 
+_HOLD_WHILE_CONNECT = re.compile(r"\b(?:please\s+)?hold(?:\s+on)?\s+while\s+(?:i|we)(?:\s+am|\s+are)?\s+(?:try|trying)(?:ing)?\s+to\s+connect\s+you\b")
+
+
+def _emergency_then_spoken_number(t: str) -> bool:
+    """"If this is an emergency, please [call] seven seven zero three five four one six three nine" -- the
+    speech-to-text dropped the verb (Pro Restorations of North Georgia, 2026-10-02, logged voicemail).
+    An emergency/urgent sentence followed by a phone-number-length run of spoken digits is a redirect."""
+    for m in re.finditer(r"\b(?:emergen\w*|urgent)\b", t):
+        toks = re.findall(r"[a-z]+|\d+", t[m.end():m.end() + 140])
+        run = best = 0
+        for tok in toks:
+            if tok.isdigit() or tok in _SPOKEN_DIGIT_TOKENS:
+                run += len(tok) if tok.isdigit() else 1
+                best = max(best, run)
+            elif run and tok in ("then", "again", "is", "at"):
+                continue
+            else:
+                run = 0
+        if best >= 10:
+            return True
+    return False
+
+
 def _spoken_number_after_call_verb(t: str) -> bool:
     """True if call/text/dial/reach is followed -- allowing a short name or "at" in
     between -- by a run of digits (spoken or numeric) long enough to be a phone
@@ -586,9 +615,15 @@ def looks_like_alt_contact(transcript: str) -> AltContactLook:
     t = (transcript or "").lower()
     if not t.strip():
         return AltContactLook(False, [])
+    # "Please hold while I try to connect you" is a HOLD announcement (Google Voice's greeting): a
+    # person or a voicemail follows. Dry Ease Mold Removal NYC was logged alt_miss on it at 13s,
+    # email_safe yes. "Google Voice WILL try to connect you" after "state your name" is screening.
+    t = _HOLD_WHILE_CONNECT.sub(" ", t)
     matched = [p for p in _ALT_CONTACT_PHRASES if p in t]
     if _spoken_number_after_call_verb(t) and not _EMERGENCY_SERVICES_NUMBER.search(t):
         matched.append("call/text + phone number")
+    elif _emergency_then_spoken_number(t) and not _EMERGENCY_SERVICES_NUMBER.search(t):
+        matched.append("emergency + phone number")
     return AltContactLook(bool(matched), matched)
 
 
@@ -624,7 +659,11 @@ _OPT_ANCHOR = re.compile(
 
 
 def _norm_digit(tok: str) -> str:
-    return _DIGIT_WORDS.get(tok.strip().lower(), tok.strip().lower())
+    t = tok.strip().lower()
+    m = re.fullmatch(r"(one|two|three|four|five|six|seven|eight|nine)\s+hundred", t)
+    if m:
+        return _DIGIT_WORDS[m.group(1)] + "00"
+    return _DIGIT_WORDS.get(t, t)
 
 
 def parse_options(transcript: str) -> list[tuple[str, str]]:
@@ -808,15 +847,54 @@ def _option_clause(t: str, digit: str) -> tuple[str, bool]:
         sent_end = min(ends) if ends else len(t)
         in_sent = [a for a in anchors if sent_start <= a.start() < sent_end]
         if len(in_sent) <= 1:
-            return t[sent_start:sent_end], bool(ends)
+            clause = t[sent_start:sent_end]
+            if _is_bare_press(clause):
+                # Speech-to-text split the option across sentences. Class One Property Restoration
+                # 2026-10-02: "Press one. For twenty four hour emergency services. Press two for all
+                # other inquiries." -- "Press one." carries no label, so the emergency option was
+                # missed and the press went out late. Borrow the neighbouring "For ..." sentence.
+                nxt_end = [x for x in (t.find(c, sent_end + 1) for c in ".?!") if x >= 0]
+                nxt = t[sent_end + 1:(min(nxt_end) if nxt_end else len(t))].strip()
+                if nxt.startswith(("for ", "to ", "if ")) and not _OPT_ANCHOR.search(nxt):
+                    return clause + " " + nxt, bool(nxt_end)
+                prv_start = max(t.rfind(c, 0, max(sent_start - 1, 0)) for c in ".?!") + 1
+                prv = t[prv_start:max(sent_start - 1, 0)].strip()
+                if prv.startswith(("for ", "to ", "if ")) and not _OPT_ANCHOR.search(prv):
+                    return prv + " " + clause, bool(ends)
+            return clause, bool(ends)
         nxt = next((a.start() for a in in_sent if a.start() > m.start()), sent_end)
         return t[m.start():nxt], bool(ends) or nxt < sent_end
     return "", False
 
 
+def _is_bare_press(clause: str) -> bool:
+    """A sentence that is only "press one" -- no label of its own."""
+    rest = _OPT_ANCHOR.sub(" ", clause.lower())
+    words = [w for w in re.findall(r"[a-z]+", rest) if w not in ("please", "now", "then", "and", "to", "the", "number", "thank", "you")]
+    return len(words) <= 1
+
+
 def _clause_emergency(clause: str) -> bool:
     return (any(w in clause for w in _EMERGENCY_WORDS) and not _NEGATED_EMERGENCY.search(clause)
             and not any(w in clause for w in _NOT_A_LIVE_OPTION))
+
+
+# An option for someone who HAS a damage problem is the line we are after even when the menu never
+# says "emergency": One Team ("If you are currently experiencing a water or fire loss in your home or
+# business, press one") and Ready 2 Inspect ("If you're calling about mold, water, or fire damage,
+# please press one" -- we pressed 2, "existing customer"), 2026-10-02.
+_DAMAGE_NOUNS = re.compile(r"\b(water|fire|flood\w*|mold|mould|smoke|sewage|storm|leak\w*)\b")
+_DAMAGE_CUES = re.compile(r"\b(loss|damage|damaged|disaster|coming into|burst|flooding|flooded|experienc\w+|calling about)\b")
+_NOT_DAMAGE_SERVICE = re.compile(
+    r"\b(existing|current customer|billing|account\w*|payroll|employ\w*|career\w*|jobs?|hiring|sales|marketing|"
+    r"project management|roofing|invoice\w*|vendors?|adjusters?|claim status|status of|general|all other|any other|"
+    r"other (?:inquir|question|call)|directory|extension|leave a message|voicemail|mailbox)\b")
+
+
+def _clause_damage_service(clause: str) -> bool:
+    return bool(_DAMAGE_NOUNS.search(clause) and _DAMAGE_CUES.search(clause)
+                and not _NOT_DAMAGE_SERVICE.search(clause)
+                and not any(w in clause for w in _NOT_A_LIVE_OPTION))
 
 
 def quick_digit(transcript: str, require_complete: bool = False) -> tuple[str, str, bool] | None:
@@ -856,6 +934,13 @@ def quick_digit(transcript: str, require_complete: bool = False) -> tuple[str, s
             if require_complete and not complete:
                 return None
             return digits[0], f"the only option, {digits[0]}, connects to a person", False
+    # (3) no emergency option named: the first option for a caller who has water / fire / mold damage
+    for digit in digits:
+        clause, complete = _option_clause(t, digit)
+        if _clause_damage_service(clause):
+            if require_complete and not complete:
+                return None
+            return digit, f"the menu offers {digit} for a caller with water/fire/mold damage", False
     return None
 
 
@@ -1129,6 +1214,33 @@ def reactive_greeting(transcript: str) -> str | None:
     return None
 
 
+_HOLD_ANNOUNCE = re.compile(
+    r"\b(please hold|hold please|hold on|one moment|just a moment|a moment please|hold while|please wait|"
+    r"will be with you|stay on the line|please stay on|connect(?:ing)? you)\b")
+_RECORDING_BOILERPLATE = re.compile(
+    r"^(?:this call|all calls|calls|your call)\b.*\b(?:recorded|monitored|recording)\b|^for (?:quality|training)\b|^thank you\b[ a-z]*$")
+
+
+def hold_pending(transcript: str) -> str | None:
+    """Reason if what was heard ENDS on a hold announcement -- the greeting told us to wait and
+    nothing after it has arrived yet. Real incidents 2026-10-02: Apex Restoration ("Hello. Thank you
+    for calling Apex Restoration. Please hold. This call is being recorded.") was logged `answered`
+    and Dry Ease ("...Please hold while I try to connect you.") `alt_miss`, both hung up on at
+    13-31s while the line was still being connected. Trailing recording boilerplate is ignored; a
+    voicemail greeting or anything a person says after the hold means it is not pending."""
+    t = (transcript or "").lower()
+    if any(p in t for p in _STRONG_VOICEMAIL_GREETING) or any(p in t for p in _TAIL_VOICEMAIL_STRONG_IDENTITY):
+        return None
+    sents = [x.strip() for x in re.split(r"[.?!]", t) if x.strip()]
+    while sents and _RECORDING_BOILERPLATE.match(sents[-1]):
+        sents.pop()
+    if not sents or not _HOLD_ANNOUNCE.search(sents[-1]):
+        return None
+    if _HUMAN_MARKER.search(sents[-1]) and not _HOLD_ANNOUNCE.search(sents[-1]):
+        return None
+    return f"the greeting ends on a hold announcement ({sents[-1][-50:]!r}); nothing has followed it yet"
+
+
 def ends_cleanly(s: str) -> bool:
     """True if the text ends at a sentence boundary (or is empty). Used before ending
     a call on a read of speech that may still be arriving -- Diversified Property
@@ -1300,6 +1412,10 @@ def decide_tail(transcript: str, answered_by: str | None, company_name: str = ""
     ms = menu_start_reason(transcript)
     if ms:
         return TailDecision("unknown", "menu_start", ms, False)
+
+    hp = hold_pending(transcript)
+    if hp:
+        return TailDecision("extended_hold", "keyword", hp, False)
 
     rg = reactive_greeting(transcript)
     if rg:

@@ -432,3 +432,89 @@ class RingWaitWiring(unittest.TestCase):
         self.assertEqual(resolved, [])
         self.assertNotIn("Hangup", body)
         self.assertIn("-- waiting", rec.press_diag)
+
+
+class Night20261002(unittest.TestCase):
+    """Real transcripts from the 2026-10-02 batch (menu text as heard at press time)."""
+
+    def test_ready2_presses_the_damage_option_not_existing_customer(self):
+        t = ("Thank you for calling. If you're calling about mold, water, or fire damage, please press one. "
+             "If you're an existing customer, please press two. For all other inquiries, please press three.")
+        self.assertEqual(ivr.quick_digit(t, require_complete=True)[0], "1")
+
+    def test_oneteam_water_or_fire_loss(self):
+        t = ("Thank you for calling OneTeam Restoration. If you are currently experiencing a water or fire loss in your home "
+             "or business, press one. For mold remediation, press two. For roofing, press three.")
+        self.assertEqual(ivr.quick_digit(t, require_complete=True)[0], "1")
+
+    def test_classone_press_one_then_the_label_in_the_next_sentence(self):
+        t = ("Thank you for contacting Class One Property Restoration. Press one. For twenty four hour emergency services. "
+             "Press two for all other inquiries.")
+        d = ivr.quick_digit(t, require_complete=True)
+        self.assertEqual((d[0], d[2]), ("1", True))
+
+    def test_r_and_s_dial_two_hundred(self):
+        t = ("Hello. You've reached R and S Restores. For water damage emergencies, please dial two hundred. "
+             "To dial by name, press nine.")
+        d = ivr.quick_digit(t, require_complete=True)
+        self.assertEqual((d[0], d[2]), ("200", True))
+        self.assertEqual(ivr.parse_options("in an emergency dial 911. press one for sales.")[0][0], "1")   # 911 is not an option
+
+    def test_options_that_must_not_be_picked_by_the_damage_rule(self):
+        for t in (
+            "Thank you for calling Rock Environmental. For asbestos services, press one. For demolition services, press two. "
+            "For employment related queries, press three. For any other queries, press four.",
+            "For choosing ACR. Voted number one in water damage restoration and air duct cleaning for nine years in a row. "
+            "Press one for scheduling. Press two for administration and hours.",
+            "If you have a billing question about a water damage claim, press one. For employment, press two.",
+        ):
+            self.assertIsNone(ivr.quick_digit(t, require_complete=True), t[:50])
+
+    def test_emergency_words_still_win_over_the_damage_rule(self):
+        t = "For water damage restoration, press one. If this is an emergency, press two."
+        self.assertEqual(ivr.quick_digit(t, require_complete=True)[0], "2")
+
+    def test_apex_hold_is_not_an_answer(self):
+        t = "Hello. Thank you for calling Apex Restoration. Please hold. This call is being recorded."
+        d = ivr.decide_tail(t, "human", "Apex Restoration And Mitigation")
+        self.assertEqual((d.outcome, d.classifier), ("extended_hold", "keyword"))
+
+    def test_hold_then_something_is_not_pending(self):
+        for t in ("Hold while I try to connect you. Yes. Hello? Hello? Hello?",
+                  "Please hold while I try to connect you. Your call has been forwarded to the voice mail for National Water "
+                  "Damage Restoration. No one is available to take your call.",
+                  "Thank you for calling Westfair. How may I help you?"):
+            self.assertIsNone(ivr.hold_pending(t), t[:40])
+
+    def test_dry_ease_hold_is_not_screening_but_google_voice_screening_still_is(self):
+        self.assertFalse(ivr.looks_like_alt_contact("Thank you for calling. TryEase. Please hold while I try to connect you.").is_alt_contact)
+        self.assertTrue(ivr.looks_like_alt_contact("Hello. Please state your name after the tone, and Google Voice will try to connect you.").is_alt_contact)
+        self.assertTrue(ivr.looks_like_alt_contact("Hi. If you record your name and reason for calling, I'll see if this person is available.").is_alt_contact)
+
+    def test_an_emergency_number_with_the_verb_dropped_is_a_redirect(self):
+        t = ("Thank you for calling Pro Restorations of North Georgia. Please leave a message after the tone. "
+             "If this is an emergency, please seven seven zero three five four one six three nine. Thank you")
+        self.assertTrue(ivr.looks_like_alt_contact(t).is_alt_contact)
+        self.assertFalse(ivr.looks_like_alt_contact("If this is an emergency, hang up and dial nine one one.").is_alt_contact)
+
+    def test_a_full_voicemail_box_is_never_navigated(self):
+        t = ("Please leave your message for five seven one three four four three eight three seven Sorry. Mailbox is full. "
+             "To send an SMS notification, press five. Or press the pound sign to continue.")
+        self.assertFalse(ivr.looks_like_menu(t).is_menu)
+
+
+class CapWithMenuReplaying(Outcomes):
+    """One Team Restoration 2026-10-02: pressed 1 (twice), the menu then looped to the 60s cap."""
+
+    def test_menu_replaying_at_the_cap_is_unresolved_not_a_hold(self):
+        menu = ("Thank you for calling OneTeam Restoration. If you are currently experiencing a water or fire loss, press one. "
+                "For mold remediation, press two. To repeat this menu, press six.")
+        rec = self.rec(menu + " " + menu, idx=len(menu), digits=["1"])
+        rec.hit_time_cap = True
+        self.assertEqual(server._compute_outcome(rec)[0], "ivr_unresolved")
+
+    def test_silence_at_the_cap_after_a_press_is_still_a_hold(self):
+        t = "Thank you for calling Quality Cleaning. For fire and water damage emergency, press one. Your call is important to us."
+        rec = self.rec(t, idx=len(t), digits=["1"])
+        rec.hit_time_cap = True
+        self.assertEqual(server._compute_outcome(rec)[0], "extended_hold")

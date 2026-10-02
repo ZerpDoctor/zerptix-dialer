@@ -392,6 +392,14 @@ def _compute_outcome(rec) -> tuple[str, str]:
             # a note that said nothing about the classifier having been down.
             if decision.reasoning:
                 cap_note = f"; last tail read: {decision.reasoning}"
+        # The digit went out and all that came back, to the end of the budget, was the menu playing
+        # again: nobody picked up and nothing was held. One Team Restoration 2026-10-02 (pressed 1 twice,
+        # the menu looped for 114s) was logged extended_hold -- the same rule the non-cap path applies.
+        if rec.digits_sent:
+            _raw_cap = rec.transcript_accum[rec.transcript_at_last_digit:]
+            _replay = ivr.menu_replayed_after_press(_raw_cap) or ivr.menu_recording_only(_raw_cap)
+            if _replay:
+                return "ivr_unresolved", _replay + "; check recording"
         if getattr(rec, "ring_seen", False) and not cap_transcript.strip() and not rec.digits_sent:
             return "unknown", "still ringing when the budget ran out (ring pattern, no text) -- nobody picked up; not a miss claim"
         return "extended_hold", "hit 60s master timer with no resolution" + cap_note
