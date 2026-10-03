@@ -63,19 +63,23 @@ def gmail_service():
     creds = None
     if TOKEN.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN), SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+    if creds and not creds.valid and creds.expired and creds.refresh_token:
+        # Google expires sign-ins of apps in "Testing" mode after 7 days: fall back to a fresh sign-in.
+        try:
             creds.refresh(Request())
-        else:
-            cid, secret = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip(), os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
-            if not cid or not secret:
-                sys.exit("GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET are not set in .env")
-            flow = InstalledAppFlow.from_client_config(
-                {"installed": {"client_id": cid, "client_secret": secret, "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                               "token_uri": "https://oauth2.googleapis.com/token", "redirect_uris": ["http://localhost"]}}, scopes=SCOPES)
-            print("Opening the browser. Sign in as the Gmail account your outreach is SENT FROM.")
-            creds = flow.run_local_server(port=0, access_type="offline", prompt="consent",
-                                          success_message="Done. You can close this tab and return to the terminal.")
+        except Exception as e:  # noqa: BLE001
+            print(f"Saved Gmail sign-in no longer works ({type(e).__name__}); signing in again.")
+            creds = None
+    if not creds or not creds.valid:
+        cid, secret = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip(), os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+        if not cid or not secret:
+            sys.exit("GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET are not set in .env")
+        flow = InstalledAppFlow.from_client_config(
+            {"installed": {"client_id": cid, "client_secret": secret, "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                           "token_uri": "https://oauth2.googleapis.com/token", "redirect_uris": ["http://localhost"]}}, scopes=SCOPES)
+        print("Opening the browser. Sign in as the Gmail account your outreach is SENT FROM.")
+        creds = flow.run_local_server(port=0, access_type="offline", prompt="consent",
+                                      success_message="Done. You can close this tab and return to the terminal.")
         TOKEN.write_text(creds.to_json())
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
