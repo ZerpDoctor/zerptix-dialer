@@ -30,3 +30,4 @@ tests/golden/quarter_reset_undo.json
 email_sync_report.csv
 email_sync_undo.json
 email_aliases.json
+email_sync_undo_sept.json
