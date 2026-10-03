@@ -94,8 +94,10 @@ class Plan:
     sends_used: int = 0
 
 
-def plan(sends: list[dict], rows: list[dict], include_clay: bool = False) -> Plan:
-    """sends: [{"date": "YYYY-MM-DD", "domains": {...}}]; rows: [{"row", "domain", "source", "email_track"}]."""
+def plan(sends: list[dict], rows: list[dict], include_clay: bool = False, aliases: dict[str, list[int]] | None = None) -> Plan:
+    """sends: [{"date": "YYYY-MM-DD", "domains": {...}}]; rows: [{"row", "domain", "source", "email_track"}].
+    aliases: recipient domain -> Queue rows, for companies emailed at a domain that is not their Queue website
+    (a human-approved override; only consulted when the domain has no direct match)."""
     p = Plan()
     index = build_index(rows)
     by_row = {int(r["row"]): r for r in rows}
@@ -111,7 +113,7 @@ def plan(sends: list[dict], rows: list[dict], include_clay: bool = False) -> Pla
                 latest[d] = s["date"]
     wanted: dict[int, str] = {}
     for d, when in latest.items():
-        hit = match_rows(d, index)
+        hit = match_rows(d, index) or list((aliases or {}).get(d, []))
         if not hit:
             p.unmatched[d] = (counts[d], when)
             continue

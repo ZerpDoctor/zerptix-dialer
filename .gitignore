@@ -29,3 +29,4 @@ tests/golden/quarter_reset_undo.json
 .gmail_token.json
 email_sync_report.csv
 email_sync_undo.json
+email_aliases.json

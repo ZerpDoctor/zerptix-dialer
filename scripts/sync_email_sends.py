@@ -93,25 +93,39 @@ def fetch_sends(svc, since: str):
         page = r.get("nextPageToken")
         if not page:
             break
-    sends = []
+    done: dict[str, dict] = {}
 
-    def cb(_rid, resp, exc):
-        if exc is not None or not resp:
-            return
-        hdr = {}
-        for h in resp.get("payload", {}).get("headers", []):
-            hdr.setdefault(h["name"].lower(), []).append(h["value"])
-        when = datetime.fromtimestamp(int(resp["internalDate"]) / 1000, tz=timezone.utc).date().isoformat()
-        doms = email_sync.recipient_domains(hdr.get("to", []) + hdr.get("cc", []) + hdr.get("bcc", []), {me})
-        sends.append({"date": when, "domains": doms})
+    def make_cb(batch_ids):
+        def cb(rid, resp, exc):
+            if exc is not None or not resp:
+                return                      # stays in `todo`; retried below, never silently dropped
+            hdr = {}
+            for h in resp.get("payload", {}).get("headers", []):
+                hdr.setdefault(h["name"].lower(), []).append(h["value"])
+            when = datetime.fromtimestamp(int(resp["internalDate"]) / 1000, tz=timezone.utc).date().isoformat()
+            doms = email_sync.recipient_domains(hdr.get("to", []) + hdr.get("cc", []) + hdr.get("bcc", []), {me})
+            done[resp["id"]] = {"date": when, "domains": doms}
+        return cb
 
-    for i in range(0, len(ids), 50):
-        batch = svc.new_batch_http_request(callback=cb)
-        for mid in ids[i:i + 50]:
-            batch.add(svc.users().messages().get(userId="me", id=mid, format="metadata", metadataHeaders=["To", "Cc", "Bcc"]))
-        batch.execute()
-        time.sleep(0.3)
-    return me, len(ids), sends
+    todo = list(ids)
+    for attempt in range(8):
+        if not todo:
+            break
+        if attempt:
+            print(f"  Gmail throttled {len(todo)} message(s); waiting {20 * attempt}s and retrying (attempt {attempt + 1})...")
+            time.sleep(20 * attempt)
+        for i in range(0, len(todo), 20):                       # small batches: Gmail's per-minute quota is the limit
+            chunk = todo[i:i + 20]
+            batch = svc.new_batch_http_request(callback=make_cb(chunk))
+            for mid in chunk:
+                batch.add(svc.users().messages().get(userId="me", id=mid, format="metadata", metadataHeaders=["To", "Cc", "Bcc"]))
+            batch.execute()
+            time.sleep(1.5)
+        todo = [m for m in todo if m not in done]
+    if todo:
+        sys.exit(f"STOPPED: {len(todo)} of {len(ids)} sent messages could not be read (Gmail rate limit). "
+                 "Nothing was written. Wait a few minutes and rerun.")
+    return me, len(ids), list(done.values())
 
 
 def read_queue():
@@ -135,6 +149,7 @@ def main() -> None:
     ap.add_argument("--since", default="2026-09-01", help="YYYY-MM-DD or Nd (e.g. 14d)")
     ap.add_argument("--apply", action="store_true", help="write email_track (default: dry run)")
     ap.add_argument("--include-clay", action="store_true", help="also mark companies from the Clay-table imports")
+    ap.add_argument("--aliases", default="", help='JSON file {"domain.com": {"row": 18, "company": "Exact Queue Name"}} for approved name-based matches')
     a = ap.parse_args()
     since = parse_since(a.since)
 
@@ -142,7 +157,16 @@ def main() -> None:
     me, n_msgs, sends = fetch_sends(gm, since)
     svc, CFG, header, rows = read_queue()
     names = {r["row"]: r["company"] for r in rows}
-    p = email_sync.plan(sends, rows, include_clay=a.include_clay)
+    aliases = {}
+    if a.aliases:
+        by_row = {r["row"]: r["company"] for r in rows}
+        for dom, spec in json.loads(Path(a.aliases).read_text(encoding="utf-8")).items():
+            if by_row.get(int(spec["row"])) == spec["company"]:
+                aliases[dom.lower()] = [int(spec["row"])]
+            else:
+                print(f"  alias skipped (row {spec['row']} is not {spec['company']!r} any more): {dom}")
+        print(f"Approved name-based aliases in use: {len(aliases)}")
+    p = email_sync.plan(sends, rows, include_clay=a.include_clay, aliases=aliases)
 
     print(f"\nGmail account: {me}   since {since}")
     print(f"Sent messages found: {n_msgs} | with a company recipient: {p.sends_used}")

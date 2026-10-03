@@ -79,3 +79,14 @@ class Planning(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Aliases(unittest.TestCase):
+    def test_an_approved_alias_is_used_only_when_there_is_no_direct_match(self):
+        rs = [{"row": 20, "domain": "http://different-site.com", "source": "", "email_track": ""},
+              {"row": 21, "domain": "acme.com", "source": "", "email_track": ""}]
+        sends = [{"date": "2026-09-10", "domains": {"acme-mail.com", "acme.com"}}]
+        p = es.plan(sends, rs, aliases={"acme-mail.com": [20], "acme.com": [20]})
+        self.assertEqual(sorted(p.writes), [(20, "2026-09-10"), (21, "2026-09-10")])     # direct match for acme.com still goes to row 21
+        p2 = es.plan([{"date": "2026-09-10", "domains": {"acme-mail.com"}}], rs)
+        self.assertEqual((p2.writes, list(p2.unmatched)), ([], ["acme-mail.com"]))      # no alias, no guess
