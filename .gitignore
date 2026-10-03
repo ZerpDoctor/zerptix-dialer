@@ -26,3 +26,6 @@ tests/golden/reviewed_extra.json
 tests/golden/phone_fix_log.json
 tests/golden/phone_lookup_found.json
 tests/golden/quarter_reset_undo.json
+.gmail_token.json
+email_sync_report.csv
+email_sync_undo.json
