@@ -224,13 +224,15 @@ def compute_quarter_reset(row: QueueRow, local_now: datetime) -> dict | None:
 _QUARTER_TAG = re.compile(r"(?:(\d{4})\s*-?\s*q([1-4])|q([1-4])\s*-?\s*(\d{4}))", re.I)
 
 
-def emailed_this_quarter(value: str, today: date) -> bool:
-    """True if the Queue's email_track cell says this company was emailed in
-    the CURRENT calendar quarter. Suppression lasts one quarter only: a
-    company emailed last quarter is dialed again this one.
+def emailed_this_quarter(value: str, today: date, hold_days: int | None = None) -> bool:
+    """True if the Queue's email_track cell says this company was emailed
+    recently enough that it should not be dialed (or emailed) yet.
 
-    The cell may hold an ISO date/timestamp ("2026-09-30", "2026-09-30T14:00")
-    or a quarter tag ("2026-Q3", "Q3 2026"). Any other non-blank text
+    An ISO date/timestamp ("2026-09-30", "2026-09-30T14:00") holds the company
+    for `hold_days` (default CFG.sched_email_hold_days = 90) from that send,
+    across quarter boundaries -- the owner's rule 2026-10-03: 90 days from the
+    last send is the next available send / call. A quarter tag ("2026-Q3",
+    "Q3 2026") means that calendar quarter only. Any other non-blank text
     ("yes", "sent") carries no date, so it is treated as emailed NOW -- the
     safe direction (don't call someone already emailed) -- but can't expire
     on its own; use a date or tag if the suppression should lapse."""
@@ -243,9 +245,11 @@ def emailed_this_quarter(value: str, today: date) -> bool:
         q = int(m.group(2) or m.group(3))
         return (year, q) == _quarter(today)
     try:
-        return _quarter(date.fromisoformat(v[:10])) == _quarter(today)
+        sent = date.fromisoformat(v[:10])
     except ValueError:
         return True
+    days = CFG.sched_email_hold_days if hold_days is None else hold_days
+    return (today - sent).days < days      # a future date (typo) also holds
 
 
 # --------------------------------------------------------------------------- #
@@ -279,7 +283,7 @@ def evaluate(row: QueueRow, now_utc: datetime) -> Decision:
     if row.is_closed:
         return Decision(row, "skip", "replied_or_closed", local)
     if emailed_this_quarter(row.email_track, local.date()):
-        return Decision(row, "skip", f"emailed this quarter (email_track={row.email_track!r})", local)
+        return Decision(row, "skip", f"emailed within {CFG.sched_email_hold_days} days (email_track={row.email_track!r})", local)
     if row.this_quarter_status == STATUS_CONFIRMED_MISS:
         return Decision(row, "skip", "confirmed_miss this quarter", local)
     if row.this_quarter_status == STATUS_CONFIRMED_COVERED:

@@ -33,3 +33,38 @@ class InvalidNumbers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmailHold(unittest.TestCase):
+    """Owner's rule 2026-10-03: 90 days from the last email send is the next available send / call."""
+
+    def held(self, value, today, days=90):
+        from datetime import date
+        return scheduler.emailed_this_quarter(value, date.fromisoformat(today), hold_days=days)
+
+    def test_ninety_days_from_the_send(self):
+        self.assertTrue(self.held("2026-09-26", "2026-10-03"))        # 7 days ago, across the quarter boundary
+        self.assertTrue(self.held("2026-09-26", "2026-12-24"))        # day 89
+        self.assertFalse(self.held("2026-09-26", "2026-12-25"))       # day 90: available again
+
+    def test_timestamps_and_blanks(self):
+        self.assertTrue(self.held("2026-09-30T14:00:00+00:00", "2026-10-03"))
+        self.assertFalse(self.held("", "2026-10-03"))
+        self.assertFalse(self.held("   ", "2026-10-03"))
+
+    def test_a_future_date_or_free_text_still_holds(self):
+        self.assertTrue(self.held("2027-01-01", "2026-10-03"))         # typo: safe direction
+        self.assertTrue(self.held("sent", "2026-10-03"))
+
+    def test_a_quarter_tag_means_that_quarter_only(self):
+        self.assertFalse(self.held("2026-Q3", "2026-10-03"))
+        self.assertTrue(self.held("2026-Q4", "2026-10-03"))
+
+    def test_the_scheduler_skips_a_company_emailed_within_90_days(self):
+        r = row("+12029228118")
+        r.set("email_track", "2026-09-26")
+        d = scheduler.evaluate(r, ET_EVENING)
+        self.assertEqual(d.action, "skip")
+        self.assertIn("emailed within 90 days", d.reason)
+        r.set("email_track", "2026-06-01")
+        self.assertEqual(scheduler.evaluate(r, ET_EVENING).action, "dial")

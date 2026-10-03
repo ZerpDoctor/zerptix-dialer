@@ -178,6 +178,9 @@ class Config:
     # False = shadow: only note "would keep waiting" on the row. True = actually keep waiting
     # (bounded by the hold budget); a call still ringing at the cap is `unknown`, not a miss.
     ring_wait_enabled: bool = False
+    # Days after the last email send (the date in the Queue's email_track cell) before a company may be
+    # dialed or emailed again. Owner's rule, 2026-10-03.
+    sched_email_hold_days: int = 90
     stream_max_restarts: int = 2
     # Hold budget: ivr_hold_budget_seconds is counted from the LAST digit
     # press (or from answer if none was pressed), so time spent in menus no
@@ -353,6 +356,7 @@ def load() -> Config:
         listen_press_max_waits=int(_get("LISTEN_PRESS_MAX_WAITS", "6") or "6"),
         stream_restart_enabled=_bool("STREAM_RESTART_ENABLED", True),
         ring_wait_enabled=_bool("RING_WAIT_ENABLED", False),
+        sched_email_hold_days=int(_get("SCHED_EMAIL_HOLD_DAYS", "90") or "90"),
         stream_max_restarts=int(_get("STREAM_MAX_RESTARTS", "2") or "2"),
         ivr_hold_budget_seconds=int(_get("IVR_HOLD_BUDGET_SECONDS", "60") or "60"),
         ivr_hard_cap_seconds=int(_get("IVR_HARD_CAP_SECONDS", "110") or "110"),
