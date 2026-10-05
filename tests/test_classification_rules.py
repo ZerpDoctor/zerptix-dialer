@@ -541,3 +541,82 @@ class SoleOptionMenus(unittest.TestCase):
                   "For billing questions, press one.",
                   "To repeat this menu, press one."):
             self.assertIsNone(ivr.quick_digit(t, require_complete=True), t[:40])
+
+
+class Night20261005(unittest.TestCase):
+    """Real transcripts from the 2026-10-05 UTC batch (140 calls)."""
+
+    GOLD_STAR = ("Thank you for calling Gold Star Restoration. Please listen carefully as our menu options have changed. If you are calling "
+                 "about a fire or water emergency, please hang up and call our emergency line at eight seven seven ninety five water. That is "
+                 "eight seven seven nine five nine two eight three seven. If you know your party's extension, you may dial it at any time. "
+                 "For a dial by name directory, dial one. To speak to someone in the office, dial two.")
+
+    def test_4_sure_send_me_a_quick_text_is_an_alt_contact(self):
+        t = ("Hello. You have reached Anthony Lemorgier. I'm currently on the phone right now assisting another customer. Please, for a "
+             "fast response, send me a quick text. If not, give me about ten to fifteen minutes to call you right back.")
+        self.assertTrue(ivr.looks_like_alt_contact(t).is_alt_contact)
+
+    def test_gold_star_emergency_redirect_number_beats_the_menu(self):
+        self.assertFalse(ivr.looks_like_menu(self.GOLD_STAR).is_menu)
+        self.assertTrue(ivr.looks_like_alt_contact(self.GOLD_STAR).is_alt_contact)
+
+    def test_a_menu_with_a_real_emergency_option_is_still_a_menu(self):
+        t = "If this is an emergency, press one. Otherwise please call our office at five five five one two three four five six seven."
+        self.assertTrue(ivr.looks_like_menu(t).is_menu)
+
+    def test_zip_code_loop_and_solicitation_block_are_gates(self):
+        self.assertTrue(ivr.looks_like_gatekeeping("Please enter the ZIP code where you need water, or fire damage restoration services. Sorry. That is not a valid ZIP code.").is_gatekeeping)
+        self.assertTrue(ivr.looks_like_gatekeeping("Number does not accept solicitation calls. If you're a customer,").is_gatekeeping)
+
+    def test_h2o_asking_the_caller_a_direct_question_is_an_agent(self):
+        t = ("Thank you for calling h two o damage. Is this a fire, water, smoke, damage, or mold damage related emergency? "
+             "Thank you for calling h two o damage. Is this a fire water damage, or mold damage related emergency?")
+        self.assertIsNotNone(ivr.reactive_greeting(t))
+        self.assertEqual(ivr.decide_tail(t, "machine_start", "H2O").outcome, "answered")
+        self.assertIsNone(ivr.reactive_greeting("If this is an emergency, please call us back. Thank you for calling."))
+
+    def test_lightning_ai_receptionist_is_answered(self):
+        t = ("Hi. For calling Lightning Restoration. This is the AI after hours receptionist. But first, please state your full name "
+             "and spell your last name for me. Hey. Are you still there?")
+        d = ivr.decide_tail(t, "human", "Lightning Restoration")
+        self.assertEqual((d.outcome, d.classifier), ("answered", "keyword"))
+
+    def test_carrier_messages_are_not_voicemail(self):
+        for t in ("Sorry. Cannot connect your call at the moment. Please try again later.", "We are sorry. We are unable to complete. Your call is dialed."):
+            self.assertEqual(ivr.decide_tail(t, "machine_start", "X").outcome, "unknown", t)
+
+    def test_choice_mold_ring_then_a_voice_is_an_answer(self):
+        d = ivr.decide_tail("Ground mold.", "human", "Choice Mold Removal", ring_seen=True)
+        self.assertEqual(d.outcome, "answered")
+        self.assertIsNone(ivr.ring_then_voice("You have reached Choice Mold. Please leave a message after the tone.", "human"))
+        self.assertIsNone(ivr.ring_then_voice("Ground mold.", "machine_start"))
+
+    def test_big_wave_a_person_after_an_early_press_is_not_a_menu_replay(self):
+        self.assertIsNone(ivr.menu_replayed_after_press(" For billing, press two. For Big Wave Restoration. It's Paul."))
+        self.assertTrue(ivr.menu_replayed_after_press("Thank you for calling Acme. Press one for sales. Press two for billing. Thank you for calling Acme."))
+
+    def test_sir_clean_does_not_press_the_first_of_several_options(self):
+        t = "Thank you for calling Circlean. This call will be recorded. For janitorial services, dial one. For fire and water"
+        self.assertIsNone(ivr.quick_digit(t, require_complete=True))
+        self.assertEqual(ivr.quick_digit("Thank you for calling Circlean. For janitorial services, dial one. For fire and water damage, dial two.", require_complete=True)[0], "2")
+
+    def test_a_person_greeting_after_a_hold_is_not_swallowed_as_boilerplate(self):
+        t = ("Please hold while we connect your call to extension one. This call will be recorded for quality and training Circling, good evening.")
+        self.assertIsNone(ivr.hold_pending(t))
+        self.assertIsNotNone(ivr.hold_pending("Hello. Thank you for calling Apex Restoration. Please hold. This call is being recorded."))
+
+    def test_twm_voicemail_box_is_never_navigated(self):
+        t = ("This call may be recorded for quality and training The person you are trying to reach is unavailable. Leave your message at the "
+             "tone. Press pound when finished. To listen to your message, press one. To rerecord your message, press two.")
+        self.assertFalse(ivr.looks_like_menu(t).is_menu)
+        self.assertIsNone(ivr.quick_digit(t, require_complete=True))
+
+    def test_the_sole_option_rule_never_picks_pound_or_star(self):
+        self.assertIsNone(ivr.quick_digit("To continue, press pound.", require_complete=True))
+
+
+class TriageThinMachine(Outcomes):
+    def test_a_bare_greeting_heard_by_a_machine_detector_is_unknown_not_answered(self):
+        rec = self.rec("Thank you for calling Triage. Property Restoration Specialist.", answered_by="machine_start", company="Triage")
+        out, note = server._compute_outcome(rec)
+        self.assertEqual(out, "unknown", note)

@@ -355,7 +355,7 @@ def _compute_outcome(rec) -> tuple[str, str]:
         cap_transcript = _tail_of(rec)
         cap_note = ""
         if cap_transcript:
-            decision = ivr.decide_tail(cap_transcript, answered_by, rec.company_name)
+            decision = ivr.decide_tail(cap_transcript, answered_by, rec.company_name, ring_seen=getattr(rec, "ring_seen", False))
             # amd_fallback means neither a real keyword match NOR a confident
             # Haiku read found anything -- decide_tail is then trusting AMD's
             # fast-mode verdict alone, which this codebase already found
@@ -459,8 +459,13 @@ def _compute_outcome(rec) -> tuple[str, str]:
         if _mro:
             return "ivr_unresolved", f"tail: {_mro}"
 
-    decision = ivr.decide_tail(transcript, answered_by, rec.company_name)
+    decision = ivr.decide_tail(transcript, answered_by, rec.company_name, ring_seen=getattr(rec, "ring_seen", False))
     note = f"tail: {decision.reasoning}" if decision.reasoning else ""
+    # Triage 2026-10-05: AMD heard a machine and all we ever got was "Thank you for calling Triage. Property
+    # Restoration Specialist." -- the start of a greeting or menu, not an answer. Keyword-only, thin, machine = unknown.
+    if (decision.outcome == "answered" and decision.classifier != "haiku" and (answered_by or "").startswith("machine")
+            and ivr.thin_answer_reason(transcript)):
+        return "unknown", f"thin: only a greeting/business name was heard and AMD heard a machine ({decision.reasoning})"
     # classifier == "amd_fallback" gets the same honest-unknown treatment as
     # a genuine "unknown" verdict, added 2026-09-22 alongside the same fix
     # in hit_time_cap and _conclude_not_menu above: this is the third and
@@ -1395,9 +1400,12 @@ def _conclude_not_menu(call_sid: str, rec) -> Response:
             # trusting a confident-sounding conclusion at that exact moment
             # is the bug, not the confidence itself. Keep listening at
             # least one more cycle instead.
+            _thin_machine = (decision.outcome == "answered" and decision.classifier != "haiku"
+                             and (rec.answered_by or "").startswith("machine") and ivr.thin_answer_reason(transcript))
             if (decision.outcome in ("answered", "voicemail", "disconnected")
                     and (decision.outcome != "answered" or ivr.ends_cleanly(transcript))
                     and decision.classifier != "amd_fallback"
+                    and not _thin_machine
                     and not ivr.mentions_incoming_menu(transcript)):
                 _resolve(call_sid)
                 return _twiml("<Hangup/>")
@@ -1405,7 +1413,9 @@ def _conclude_not_menu(call_sid: str, rec) -> Response:
         # No text at all. If the audio shows a RINGING cadence the far end has not
         # picked up yet (Longview / Doan / Beacon 2026-10-01: AMD "human", ~800 frames,
         # zero words, we hung up at 18s mid-ring). Shadow mode only notes it.
-        if CFG.stream_transcription_enabled and media_stream.ringback_pattern(media_stream.get_buffer(call_sid).energy):
+        # Once ringing has been seen, keep waiting even if the cadence later breaks up (Dry Patrol Akron
+        # 2026-10-05: ringing, then a different tone, and we hung up at 23s with the budget unused).
+        if CFG.stream_transcription_enabled and (rec.ring_seen or media_stream.ringback_pattern(media_stream.get_buffer(call_sid).energy)):
             _at = STORE.seconds_since_answered(call_sid)
             if not rec.ring_seen:
                 STORE.update(call_sid, ring_seen=True,

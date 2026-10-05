@@ -94,6 +94,9 @@ _VOICEMAIL_CONTROL_PHRASES = [
     # Salem Steamer 2026-10-02: "Mailbox is full. To send an SMS notification, press five" -- we
     # pressed 5 and #, which texts the box owner. A full / carrier mailbox is never a menu.
     "mailbox is full", "mailbox full", "sms notification", "to send an sms",
+    # TWM Water Restoration of Raleigh 2026-10-05: "Press pound when finished. To listen to your message,
+    # press one. To rerecord your message, press two" -- we pressed # on it.
+    "rerecord your message", "press pound when finished", "leave your message at the tone",
 ]
 
 # A transcript that explicitly announces a menu is about to be read out, but
@@ -203,6 +206,11 @@ _GATEKEEPING_PHRASES = [
     "your verification code", "your full name and", "the reason for your call",
     "the reason you're calling", "reason for calling", "state your name",
     "say your name", "spell your last name", "spell your name",
+    # 2026-10-05: Louisville Emergency Water Damage Cleanup looped "Please enter the ZIP code where you need
+    # water or fire damage restoration services. Sorry, that is not a valid ZIP code" (logged extended_hold);
+    # Restoration Xpress played "Number does not accept solicitation calls" (logged voicemail).
+    "enter the zip code", "enter your zip code", "not a valid zip code",
+    "does not accept solicitation", "doesn't accept solicitation", "do not accept solicitation", "no solicitation",
 ]
 
 # An automated message redirecting the caller to a DIFFERENT contact channel
@@ -418,6 +426,14 @@ def looks_like_menu(transcript: str) -> MenuLook:
         return MenuLook(True, 99, ["human-verification-screen"])
     if any_key_digit(t):
         return MenuLook(True, 99, ["press-any-key-to-be-connected"])
+    # "If you are calling about a fire or water emergency, please hang up and call our emergency line at 877..."
+    # sends emergencies to ANOTHER number; the menu that follows is for everything else. With no emergency
+    # option of its own that is an alt-contact miss, not a menu to navigate (Gold Star Restoration, 2026-10-05,
+    # pressed 2 at +37s and the call dropped).
+    if _emergency_then_spoken_number(t) and re.search(r"\bhang up\b|\bplease call\b|\bcall our\b", t):
+        _q = quick_digit(t)
+        if not (_q and _q[2]):
+            return MenuLook(False, 0, ["emergency-redirect-to-another-number"])
 
     # Never treat a voicemail box's own recording-control menu as a
     # navigable business IVR, even though it structurally matches
@@ -562,6 +578,7 @@ _SPOKEN_DIGIT_TOKENS = {"zero", "oh", "one", "two", "three", "four", "five", "si
 _EMERGENCY_SERVICES_NUMBER = re.compile(r"\b(911|nine one one)\b")
 
 
+_SEND_ME_TEXT = re.compile(r"\b(?:send|shoot|drop)\s+(?:me|us)\s+(?:a|an)\s+(?:quick\s+|short\s+)?(?:text|e-?mail)\b")
 _HOLD_WHILE_CONNECT = re.compile(r"\b(?:please\s+)?hold(?:\s+on)?\s+while\s+(?:i|we)(?:\s+am|\s+are)?\s+(?:try|trying)(?:ing)?\s+to\s+connect\s+you\b")
 
 
@@ -624,6 +641,8 @@ def looks_like_alt_contact(transcript: str) -> AltContactLook:
         matched.append("call/text + phone number")
     elif _emergency_then_spoken_number(t) and not _EMERGENCY_SERVICES_NUMBER.search(t):
         matched.append("emergency + phone number")
+    if _SEND_ME_TEXT.search(t):
+        matched.append("send me a text")                 # 4 Sure Restoration 2026-10-05: "send me a quick text"
     return AltContactLook(bool(matched), matched)
 
 
@@ -870,7 +889,32 @@ def _option_clause(t: str, digit: str) -> tuple[str, bool]:
 _SOLE_NOT_THE_WAY = re.compile(
     r"\b(message|voicemail|voice mail|mailbox|record\w*|repeat|billing|payments?|pay|account\w*|employ\w*|career\w*|jobs?|"
     r"spanish|espanol|directory|extension|sales|marketing|vendors?|invoice\w*|hear|again|menu|previous|return|"
-    r"hang up|disconnect|opt out|unsubscribe)\b")
+    r"hang up|disconnect|opt out|unsubscribe|finished|done|tone|cancel|janitorial|pound|star)\b")
+
+
+def _sole_option_is_final(t: str, clause: str) -> bool:
+    """True if nothing but greeting / recording boilerplate / the same option again follows the sole
+    option's sentence. Sir Clean Corp. 2026-10-05: "For janitorial services, dial one. For fire and
+    water..." -- the sole-option rule pressed 1 (janitorial) before the second option had been read."""
+    last = None
+    for m in _OPT_ANCHOR.finditer(t):
+        if m.group("d1"):
+            last = m
+    if last is None:
+        return False
+    ends = [x for x in (t.find(c, last.end()) for c in ".?!") if x >= 0]
+    rest = t[(min(ends) + 1):] if ends else ""
+    anchor_sentence = t[max(t.rfind(c, 0, last.start()) for c in ".?!") + 1:(min(ends) if ends else len(t))].strip()
+    for sent in re.split(r"[.?!]", rest):
+        s = sent.strip()
+        if not s:
+            continue
+        if re.match(r"^(thank you|thanks|this call|all calls|calls|your call|please hold|good (morning|afternoon|evening))", s):
+            continue
+        if s == anchor_sentence:                      # the same option read again (a looping menu)
+            continue
+        return False
+    return True
 
 
 def _is_bare_press(clause: str) -> bool:
@@ -944,7 +988,8 @@ def quick_digit(transcript: str, require_complete: bool = False) -> tuple[str, s
         # These IVRs give up after ~5s of silence: Dry Guy Restoration ("Press one for the Dry Guy
         # Restoration.") and Phoenix Flood And Fire ("Press one to continue to our main line", looped
         # 3x) both hung up before our model-chosen press landed at +11s / +17s (2026-10-02).
-        if clause and not _SOLE_NOT_THE_WAY.search(clause) and not any(w in clause for w in _NOT_A_LIVE_OPTION):
+        if (clause and digits[0].isdigit() and not _SOLE_NOT_THE_WAY.search(clause)
+                and not any(w in clause for w in _NOT_A_LIVE_OPTION) and _sole_option_is_final(t, clause)):
             if require_complete and not complete:
                 return None
             return digits[0], f"the only option, {digits[0]}, is the way forward", False
@@ -1210,12 +1255,20 @@ def menu_replayed_after_press(raw_tail: str) -> str | None:
     first = _OPT_ANCHOR.search(t)
     if first and first.start() <= 3 and len(digits) < 2 and not menu_repeats(t):
         return None
+    # A short self-introduction closing the text ("... For Big Wave Restoration. It's Paul.") is a person
+    # picking up after the early press, not the menu playing again.
+    if re.search(r"(?:^|[.?!]\s*)(?:it'?s|i'?m|this is|my name is)\s+[a-z]+[.?!]?\s*$", t.strip()):
+        return None
     after = t[last.end():]
     if _HUMAN_MARKER.search(after) or "?" in after:
         return None
     return "the menu was playing again after the press; no person and no voicemail greeting was heard"
 
 
+_ASKS_CALLER = re.compile(
+    r"\bis this (?:a|an) [^.?!]{0,70}emergency\s*\?|\bwhat(?:'s| is) your emergency\b|\bwho am i (?:speaking|talking) (?:to|with)\b")
+_CALL_FAILED = ("unable to complete", "cannot connect your call", "can't connect your call", "could not be completed",
+                "cannot be connected at this time")
 _OFFER_HELP = re.compile(r"\b(how (can|may) (i|we) (help|assist|direct)|can i help|may i help|what can i do)\b")
 _REACTIVE = re.compile(r"\b(hello|hi there|are you there|can you hear me|anyone there|anybody)\b")
 
@@ -1229,6 +1282,11 @@ def reactive_greeting(transcript: str) -> str | None:
     t = (transcript or "").lower()
     if any(p in t for p in _STRONG_VOICEMAIL_GREETING):
         return None
+    # A greeting that puts a direct question to the caller is an interactive agent, not a recording of a menu
+    # (no "press N" anywhere): H2O Damage, 2026-10-05, asked "Is this a fire, water, smoke, damage, or mold
+    # damage related emergency?" three times.
+    if "press" not in t and _ASKS_CALLER.search(t):
+        return "a greeting that asks the caller a direct question -- an interactive agent"
     m = _OFFER_HELP.search(t)
     if not m:
         return None
@@ -1241,8 +1299,12 @@ def reactive_greeting(transcript: str) -> str | None:
 _HOLD_ANNOUNCE = re.compile(
     r"\b(please hold|hold please|hold on|one moment|just a moment|a moment please|hold while|please wait|"
     r"will be with you|stay on the line|please stay on|connect(?:ing)? you)\b")
+# Anchored: ONLY the disclosure itself. A looser pattern swallowed "this call will be recorded for quality
+# and training Circling, good evening" (speech-to-text dropped the period) and hid the person's greeting.
 _RECORDING_BOILERPLATE = re.compile(
-    r"^(?:this call|all calls|calls|your call)\b.*\b(?:recorded|monitored|recording)\b|^for (?:quality|training)\b|^thank you\b[ a-z]*$")
+    r"^(?:this call|all calls|calls|your call)\b[^.?!]{0,40}\b(?:recorded|monitored|recording)\b"
+    r"(?: (?:for|to) (?:quality|training|monitoring|security|assurance)(?: (?:and|or|assurance|purposes|training|quality|monitoring))*)?$"
+    r"|^for (?:quality|training)(?: (?:and|or|assurance|purposes|training|quality|monitoring))*$|^thank you\b[ a-z]*$")
 
 
 def hold_pending(transcript: str) -> str | None:
@@ -1410,7 +1472,32 @@ class TailDecision:
     conflicts_with_amd: bool  # True when we overrode a real AMD signal
 
 
-def decide_tail(transcript: str, answered_by: str | None, company_name: str = "") -> TailDecision:
+def ring_then_voice(transcript: str, answered_by: str | None) -> str | None:
+    """Reason if the line RANG and then a voice spoke, with nothing that points to a recording: no voicemail
+    wording, no hold announcement, no menu. Choice Mold Removal 2026-10-05: ringing, then "Ground mold." (a
+    person saying "Choice Mold"), left unknown. Only trusted when AMD also says human."""
+    if (answered_by or "") != "human":
+        return None
+    t = (transcript or "").lower().strip()
+    if not t or len(t.split()) < 1:
+        return None
+    if (any(p in t for p in _STRONG_VOICEMAIL_GREETING) or any(p in t for p in _TAIL_VOICEMAIL)
+            or any(p in t for p in _TAIL_VOICEMAIL_STRONG_IDENTITY) or _HOLD_ANNOUNCE.search(t)
+            or _OPT_ANCHOR.search(t) or any(p in t for p in _CALL_FAILED)):
+        return None
+    return "the line rang, then a voice answered (thin evidence: ring followed by speech, AMD human)"
+
+
+def decide_tail(transcript: str, answered_by: str | None, company_name: str = "", ring_seen: bool = False) -> TailDecision:
+    d = _decide_tail(transcript, answered_by, company_name)
+    if ring_seen and (d.outcome == "unknown" or d.classifier == "amd_fallback"):
+        rv = ring_then_voice(transcript, answered_by)
+        if rv:
+            return TailDecision("answered", "keyword", rv, False)
+    return d
+
+
+def _decide_tail(transcript: str, answered_by: str | None, company_name: str = "") -> TailDecision:
     """Single source of truth for 'what actually happened on this call', used
     for BOTH the post-menu-navigation tail AND plain non-menu calls.
 
@@ -1436,6 +1523,16 @@ def decide_tail(transcript: str, answered_by: str | None, company_name: str = ""
     ms = menu_start_reason(transcript)
     if ms:
         return TailDecision("unknown", "menu_start", ms, False)
+
+    # A carrier / network message that the call itself failed ("unable to complete", "cannot connect your call at
+    # the moment, try again later" -- Renewal Claim Solutions, ARCO 2026-10-05) is not a voicemail and not a miss.
+    if any(p in low for p in _CALL_FAILED):
+        return TailDecision("unknown", "keyword", "carrier/network message: the call could not be completed", False)
+
+    # Owner policy 2026-10-01: a company whose line is answered by its AI receptionist HAS answered
+    # (Lightning Restoration, 2026-10-05, was left unknown).
+    if _AI_RECEPTIONIST.search(low) and not any(p in low for p in _STRONG_VOICEMAIL_GREETING):
+        return TailDecision("answered", "keyword", "an AI receptionist answered (owner policy: counts as answered)", amd_guess == "voicemail")
 
     hp = hold_pending(transcript)
     if hp:
