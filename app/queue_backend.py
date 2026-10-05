@@ -90,6 +90,26 @@ class SheetQueue:
             body={"valueInputOption": "RAW", "data": data},
         ).execute()
 
+    def update_many(self, updates: list[tuple[int, dict]]) -> None:
+        """Write many rows' fields in a few requests (a values:batchUpdate counts as ONE write against
+        Google's 60-per-minute quota, however many cells it carries)."""
+        import time
+        from googleapiclient.errors import HttpError
+        data = []
+        for row_number, fields in updates:
+            for name, value in fields.items():
+                data.append({"range": f"{self.tab}!{col_letter(HEADER.index(name))}{row_number}", "values": [[str(value)]]})
+        for s in range(0, len(data), 2500):
+            for attempt in range(20):
+                try:
+                    _svc().spreadsheets().values().batchUpdate(
+                        spreadsheetId=CFG.sheet_id, body={"valueInputOption": "RAW", "data": data[s:s + 2500]}).execute()
+                    break
+                except HttpError as e:
+                    if e.resp.status != 429 or attempt == 19:
+                        raise
+                    time.sleep(5)
+
     def append_rows(self, dicts: list[dict]) -> None:
         values = [[str(d.get(h, "")) for h in HEADER] for d in dicts]
         _svc().spreadsheets().values().append(
@@ -128,6 +148,10 @@ class MemoryQueue:
                 for name, value in fields.items():
                     r.raw[HEADER.index(name)] = str(value)
                 return
+
+    def update_many(self, updates: list[tuple[int, dict]]) -> None:
+        for row_number, fields in updates:
+            self.update_fields(row_number, fields)
 
     def as_dicts(self) -> list[dict]:
         return [{h: r.raw[i] for i, h in enumerate(HEADER)} for r in self._rows]

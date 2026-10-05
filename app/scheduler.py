@@ -213,6 +213,11 @@ def compute_quarter_reset(row: QueueRow, local_now: datetime) -> dict | None:
         "next_eligible_date": "",
         "miss_timestamp": "",
         "consecutive_answered_count": 0,
+        # Clearing this is what makes the reset happen ONCE. It used to stay in the old quarter, so every
+        # tick (60s) matched the same ~2,100 rows again and rewrote each one -- thousands of Sheet writes a
+        # minute against a 60/minute quota, which failed every tick ("Scheduler ticks are failing", 2026-10-02..05).
+        # The Calls sheet keeps the call history; only the already-attempted-today check reads this field.
+        "last_call_date": "",
         "last_updated_at": local_now.astimezone(timezone.utc).isoformat(),
     }
 
@@ -511,17 +516,23 @@ def tick(now_utc: datetime | None = None, *, queue=None, dialer=None,
         fair_offsets = _tz_ranks(queue.read_rows(), now_utc)
     fair_total = sum(_cap_for(n) for n in CFG.signalwire_from_numbers) if fair_offsets else 0
 
-    for row in queue.read_rows():
+    all_rows = queue.read_rows()
+    # New-quarter resets are collected first and written in ONE bulk request (a row is reset before its own
+    # dial decision, so the server never increments last quarter's attempt count).
+    pending_resets: list[tuple[int, dict]] = []
+    for row in all_rows:
         tz = parse_tz(row.timezone)
         if tz is not None:
             reset = compute_quarter_reset(row, now_utc.astimezone(tz))
             if reset:
-                if not dry_run:
-                    queue.update_fields(row.row_number, reset)
+                pending_resets.append((row.row_number, reset))
                 for k, v in reset.items():
                     row.set(k, v)
                 out.append(Decision(row, "reset", "new calendar quarter"))
+    if pending_resets and not dry_run:
+        queue.update_many(pending_resets)
 
+    for row in all_rows:
         d = evaluate(row, now_utc)
         if d.action != "dial":
             out.append(d)

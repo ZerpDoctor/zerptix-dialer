@@ -68,3 +68,50 @@ class EmailHold(unittest.TestCase):
         self.assertIn("emailed within 90 days", d.reason)
         r.set("email_track", "2026-06-01")
         self.assertEqual(scheduler.evaluate(r, ET_EVENING).action, "dial")
+
+
+class QuarterResetOnce(unittest.TestCase):
+    """2026-10-02..05: last_call_date stayed in last quarter, so EVERY 60s tick matched the same ~2,100 rows
+    again and rewrote each one -- thousands of Sheet writes a minute vs a 60/min quota; ticks failed with 429."""
+
+    def rows(self, n=5):
+        out = []
+        for i in range(n):
+            d = {h: "" for h in HEADER}
+            d.update({"company_name": f"Q3 Co {i}", "phone_e164": f"+1202555{1000 + i}", "timezone": "America/New_York", "state": "VA",
+                      "current_quarter_attempts": "2", "this_quarter_status": "confirmed_miss", "last_call_date": "2026-09-24",
+                      "last_outcome": "voicemail", "miss_timestamp": "2026-09-24T01:00:00+00:00", "next_eligible_date": "2026-10-04"})
+            out.append(d)
+        return out
+
+    def test_a_reset_clears_last_call_date_so_it_cannot_match_again(self):
+        from datetime import datetime
+        from app.queue_model import row_from_dict
+        r = row_from_dict(self.rows(1)[0], row_number=2)
+        local = datetime(2026, 10, 5, 21, 35, tzinfo=timezone.utc)
+        first = scheduler.compute_quarter_reset(r, local)
+        self.assertEqual((first["last_call_date"], first["this_quarter_status"], first["current_quarter_attempts"]), ("", "in_progress", 0))
+        for k, v in first.items():
+            r.set(k, v)
+        self.assertIsNone(scheduler.compute_quarter_reset(r, local))          # idempotent
+
+    def test_a_tick_writes_all_resets_in_one_bulk_call_and_the_next_tick_writes_none(self):
+        from app.queue_backend import MemoryQueue
+        q = MemoryQueue(self.rows(5))
+        calls = []
+        orig_many, orig_one = q.update_many, q.update_fields
+        q.update_many = lambda ups: (calls.append(("many", len(ups))), orig_many(ups))[1]
+        q.update_fields = lambda n, f: (calls.append(("one", n)), orig_one(n, f))[1]
+        now = datetime(2026, 10, 5, 1, 35, tzinfo=timezone.utc)
+        out1 = scheduler.tick(now, queue=q, dialer=lambda *a, **k: "CAx", dry_run=False, activity_fn=lambda day: [], gate=_OpenGate())
+        self.assertEqual([c for c in calls if c[0] == "many"], [("many", 5)])
+        self.assertEqual(sum(1 for d in out1 if d.action == "reset"), 5)
+        calls.clear()
+        out2 = scheduler.tick(now, queue=q, dialer=lambda *a, **k: "CAx", dry_run=False, activity_fn=lambda day: [], gate=_OpenGate())
+        self.assertEqual(sum(1 for d in out2 if d.action == "reset"), 0)
+        self.assertEqual([c for c in calls if c[0] == "many"], [])
+
+
+class _OpenGate:
+    def allow(self, rows):
+        return True, ""
