@@ -68,6 +68,7 @@ def record_attempt(queue, phone: str, *, call_sid: str, window: str,
 def apply_outcome(queue, phone: str, outcome: str, *, call_sid: str = "",
                   recording_url: str = "", ivr_flagged: bool = False,
                   heal_missed_attempt: bool = False,
+                  do_not_call: bool = False,
                   when_utc: datetime | None = None) -> dict | None:
     """Write a resolved call outcome + quarter status back to the company's row
     (spec section 7). Returns the written fields, or None if no matching row."""
@@ -83,6 +84,8 @@ def apply_outcome(queue, phone: str, outcome: str, *, call_sid: str = "",
             fields["recording_url"] = recording_url
         if ivr_flagged:
             fields["ivr_fallback_flagged"] = "yes"
+        if do_not_call:
+            fields["do_not_call"] = "true"      # the number told us it does not accept solicitation calls
 
         # Self-heal a record_attempt() that never wrote through. Real incident
         # 2026-09-24: Restoration Done was dialed twice 8 minutes apart -- its

@@ -53,6 +53,10 @@ def assess(row: dict) -> tuple[str, str]:
     if "company_name" in row and not (row.get("company_name") or "").strip():
         return "no", "no company name: a manual/test call, not a Queue prospect"
 
+    if any(p in transcript for p in ("does not accept solicitation", "doesn't accept solicitation", "do not accept solicitation",
+                                     "no solicitation", "no soliciting", "not accept any solicitation")):
+        return "no", "do not contact: the number says it does not accept solicitation calls (do_not_call)"
+
     if outcome in _NOT_A_MISS:
         return "no", f"{outcome}: {_NOT_A_MISS[outcome]}"
     if outcome not in ("voicemail", "alt_miss", "gatekeeping_miss", "no_answer"):

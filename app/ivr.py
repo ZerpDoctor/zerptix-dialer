@@ -1265,6 +1265,18 @@ def menu_replayed_after_press(raw_tail: str) -> str | None:
     return "the menu was playing again after the press; no person and no voicemail greeting was heard"
 
 
+_NO_SOLICITATION = ("does not accept solicitation", "doesn't accept solicitation", "do not accept solicitation",
+                    "no solicitation", "no soliciting", "not accept any solicitation")
+
+
+def refuses_solicitation(transcript: str) -> bool:
+    """True if the line itself says it does not take solicitation calls (Restoration Xpress, 2026-10-05:
+    "Number does not accept solicitation calls"). Owner rule: that is a do-not-call -- never dial it again and
+    never email from it."""
+    t = (transcript or "").lower()
+    return any(p in t for p in _NO_SOLICITATION)
+
+
 _ASKS_CALLER = re.compile(
     r"\bis this (?:a|an) [^.?!]{0,70}emergency\s*\?|\bwhat(?:'s| is) your emergency\b|\bwho am i (?:speaking|talking) (?:to|with)\b")
 _CALL_FAILED = ("unable to complete", "cannot connect your call", "can't connect your call", "could not be completed",

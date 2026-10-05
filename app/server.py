@@ -648,6 +648,7 @@ def _update_queue_row(rec, outcome: str) -> None:
                 recording_url=rec.recording_url or "",
                 ivr_flagged=rec.ivr_fallback_flagged,
                 heal_missed_attempt=rec.is_scheduled_attempt,
+                do_not_call=ivr.refuses_solicitation(rec.transcript_accum or ""),
             )
             if fields is None:
                 return  # not a queued company

@@ -115,3 +115,34 @@ class QuarterResetOnce(unittest.TestCase):
 class _OpenGate:
     def allow(self, rows):
         return True, ""
+
+
+class SolicitationRefusedIsDoNotCall(unittest.TestCase):
+    """Owner rule 2026-10-05: a number that says it does not accept solicitation calls is do-not-call."""
+
+    T = "Number does not accept solicitation calls. If you're a customer,"
+
+    def test_the_phrase_is_detected(self):
+        from app import ivr
+        self.assertTrue(ivr.refuses_solicitation(self.T))
+        self.assertFalse(ivr.refuses_solicitation("Please leave a message after the tone."))
+
+    def test_it_is_never_an_email_target(self):
+        from app import email_safety
+        safe, why = email_safety.assess({"company_name": "Restoration Xpress", "outcome": "gatekeeping_miss", "ivr_transcript": self.T})
+        self.assertEqual(safe, "no")
+        self.assertIn("solicitation", why)
+
+    def test_the_queue_row_gets_do_not_call(self):
+        from app import queue_writer
+        from app.queue_backend import MemoryQueue
+        d = {h: "" for h in HEADER}
+        d.update({"company_name": "Restoration Xpress", "phone_e164": "+12025550188", "timezone": "America/New_York",
+                  "current_quarter_attempts": "1", "this_quarter_status": "in_progress"})
+        q = MemoryQueue([d])
+        queue_writer.apply_outcome(q, "+12025550188", "gatekeeping_miss", call_sid="CAx", do_not_call=True)
+        self.assertEqual(q.find_by_phone("+12025550188")._g("do_not_call"), "true")
+        d2 = dict(d, phone_e164="+12025550199")
+        q2 = MemoryQueue([d2])
+        queue_writer.apply_outcome(q2, "+12025550199", "gatekeeping_miss", call_sid="CAy")
+        self.assertNotEqual(q2.find_by_phone("+12025550199")._g("do_not_call"), "true")
