@@ -569,7 +569,9 @@ def _build_row(rec, outcome: str, note: str) -> dict:
         notes.append(f"diag: {rec.press_diag}")
     if rec.turn_trace and rec.digits_sent:
         notes.append(f"trace: {rec.turn_trace}")
-    if outcome in ("unknown", "ivr_unresolved") or not rec.transcript_accum.strip():
+    # extended_hold included (AllPro Restoration & Janitorial 2026-10-06: pressed 1, then 60s of nothing -- ringing,
+    # silence or hold music cannot be told apart without the audio levels).
+    if outcome in ("unknown", "ivr_unresolved", "extended_hold") or not rec.transcript_accum.strip():
         _sbuf = media_stream.peek_buffer(rec.call_sid)
         if _sbuf is not None:
             notes.append(_sbuf.stats_note(rec.answered_at))
