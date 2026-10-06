@@ -463,8 +463,10 @@ def _compute_outcome(rec) -> tuple[str, str]:
     note = f"tail: {decision.reasoning}" if decision.reasoning else ""
     # Triage 2026-10-05: AMD heard a machine and all we ever got was "Thank you for calling Triage. Property
     # Restoration Specialist." -- the start of a greeting or menu, not an answer. Keyword-only, thin, machine = unknown.
-    if (decision.outcome == "answered" and decision.classifier != "haiku" and (answered_by or "").startswith("machine")
-            and ivr.thin_answer_reason(transcript)):
+    # (Deliberate rules -- a person's name after a hold announcement, an AI receptionist -- are classifier "rule"
+    # and are NOT second-guessed here: Triangle Restoration, 2026-10-06, was turned unknown by this guard.)
+    if (decision.outcome == "answered" and decision.classifier != "rule" and (answered_by or "").startswith("machine")
+            and ivr.thin_answer_reason(transcript) and not ivr.echoed_name_after_opening(transcript, rec.company_name)):
         return "unknown", f"thin: only a greeting/business name was heard and AMD heard a machine ({decision.reasoning})"
     # classifier == "amd_fallback" gets the same honest-unknown treatment as
     # a genuine "unknown" verdict, added 2026-09-22 alongside the same fix
@@ -575,6 +577,11 @@ def _build_row(rec, outcome: str, note: str) -> dict:
         _thin = ivr.thin_answer_reason(_tail_of(rec))
         if _thin:
             notes.append(f"evidence: thin ({_thin})")
+            # Audio levels for thin answers too, so a greeting followed by silence (a person waiting) can be
+            # told from one followed by hold music or a menu we never heard (Total Care / Miller, 2026-10-06).
+            _tb = media_stream.peek_buffer(rec.call_sid)
+            if _tb is not None and _tb.energy_note():
+                notes.append(_tb.energy_note())
     if CFG.test_mode:
         notes.append("TEST_MODE")
     now_utc = datetime.now(timezone.utc)
@@ -1401,8 +1408,9 @@ def _conclude_not_menu(call_sid: str, rec) -> Response:
             # trusting a confident-sounding conclusion at that exact moment
             # is the bug, not the confidence itself. Keep listening at
             # least one more cycle instead.
-            _thin_machine = (decision.outcome == "answered" and decision.classifier != "haiku"
-                             and (rec.answered_by or "").startswith("machine") and ivr.thin_answer_reason(transcript))
+            _thin_machine = (decision.outcome == "answered" and decision.classifier != "rule"
+                             and (rec.answered_by or "").startswith("machine") and ivr.thin_answer_reason(transcript)
+                             and not ivr.echoed_name_after_opening(transcript, rec.company_name))
             if (decision.outcome in ("answered", "voicemail", "disconnected")
                     and (decision.outcome != "answered" or ivr.ends_cleanly(transcript))
                     and decision.classifier != "amd_fallback"

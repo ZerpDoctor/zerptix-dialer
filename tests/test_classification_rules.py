@@ -477,7 +477,7 @@ class Night20261002(unittest.TestCase):
     def test_apex_hold_is_not_an_answer(self):
         t = "Hello. Thank you for calling Apex Restoration. Please hold. This call is being recorded."
         d = ivr.decide_tail(t, "human", "Apex Restoration And Mitigation")
-        self.assertEqual((d.outcome, d.classifier), ("extended_hold", "keyword"))
+        self.assertEqual((d.outcome, d.classifier), ("extended_hold", "rule"))
 
     def test_hold_then_something_is_not_pending(self):
         for t in ("Hold while I try to connect you. Yes. Hello? Hello? Hello?",
@@ -579,7 +579,7 @@ class Night20261005(unittest.TestCase):
         t = ("Hi. For calling Lightning Restoration. This is the AI after hours receptionist. But first, please state your full name "
              "and spell your last name for me. Hey. Are you still there?")
         d = ivr.decide_tail(t, "human", "Lightning Restoration")
-        self.assertEqual((d.outcome, d.classifier), ("answered", "keyword"))
+        self.assertEqual((d.outcome, d.classifier), ("answered", "rule"))
 
     def test_carrier_messages_are_not_voicemail(self):
         for t in ("Sorry. Cannot connect your call at the moment. Please try again later.", "We are sorry. We are unable to complete. Your call is dialed."):
@@ -620,3 +620,36 @@ class TriageThinMachine(Outcomes):
         rec = self.rec("Thank you for calling Triage. Property Restoration Specialist.", answered_by="machine_start", company="Triage")
         out, note = server._compute_outcome(rec)
         self.assertEqual(out, "unknown", note)
+
+
+class Night20261006(Outcomes):
+    """Real transcripts from the 2026-10-06 UTC batch (200 calls, the older manual_import list: answered 72%)."""
+
+    def test_pm_leary_we_will_be_right_with_you_is_a_hold_not_a_voicemail(self):
+        t = ("Thank you for calling PM Leary Restoration after hours emergency line. We'll be right with you. "
+             "For quality assurance, your call is now being recorded.")
+        self.assertIsNotNone(ivr.hold_pending(t))
+        d = ivr.decide_tail(t, "machine_start", "PM Leary Restoration")
+        self.assertEqual(d.outcome, "extended_hold")
+
+    def test_triangle_a_name_after_the_hold_announcement_is_a_person(self):
+        t = "This call will be recorded for quality purposes. For calling. After hours. Please hold for the next available agent. Triangle restoration."
+        rec = self.rec(t, answered_by="machine_start", company="Triangle Restoration")
+        out, note = server._compute_outcome(rec)
+        self.assertEqual(out, "answered", note)
+
+    def test_miller_a_recorded_greeting_with_no_person_is_not_an_answer_when_amd_heard_a_machine(self):
+        t = "You have reached Miller Restoration. Call may be monitored and recorded for record keeping, training, and quality assurance purposes."
+        rec = self.rec(t, answered_by="machine_start", company="Miller Restoration")
+        out, note = server._compute_outcome(rec)
+        self.assertEqual(out, "unknown", note)
+
+
+class EchoedNameAfterOpening(unittest.TestCase):
+    def test_a_clipped_name_after_the_disclosure_is_a_person(self):
+        self.assertTrue(ivr.echoed_name_after_opening("Thank you for choosing water removal services. This call may be recorded. Water removal.", "Water Removal Services"))
+        self.assertTrue(ivr.echoed_name_after_opening("This call will be recorded for quality. Elite Restoration.", "Elite Restoration Inc"))
+
+    def test_an_opening_and_a_disclosure_with_nobody_after_is_not(self):
+        self.assertFalse(ivr.echoed_name_after_opening("You have reached Miller Restoration. Call may be monitored and recorded for record keeping, training, and quality assurance purposes.", "Miller Restoration"))
+        self.assertFalse(ivr.echoed_name_after_opening("Thank you for calling Triage. Property Restoration Specialist.", "Triage"))

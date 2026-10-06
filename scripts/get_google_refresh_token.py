@@ -62,7 +62,7 @@ def main() -> None:
         port=0,
         access_type="offline",
         prompt="consent",
-        authorization_prompt_message="Opening browser for Google consent...",
+        authorization_prompt_message="Opening browser for Google consent. If no window opens, visit: {url}",
         success_message="Done. You can close this tab and return to the terminal.",
     )
 
@@ -73,6 +73,21 @@ def main() -> None:
         )
         sys.exit(1)
 
+    if "--write-env" in sys.argv:
+        # Save straight into .env (replacing the old line) so the secret never has to be pasted around.
+        import pathlib
+        import re
+        envp = pathlib.Path(".env")
+        text = envp.read_text(encoding="utf-8") if envp.exists() else ""
+        line = f"GOOGLE_OAUTH_REFRESH_TOKEN={creds.refresh_token}"
+        if re.search(r"(?m)^GOOGLE_OAUTH_REFRESH_TOKEN=.*$", text):
+            text = re.sub(r"(?m)^GOOGLE_OAUTH_REFRESH_TOKEN=.*$", lambda m: line, text)
+        else:
+            text += ("\n" if text and not text.endswith("\n") else "") + line + "\n"
+        envp.write_text(text, encoding="utf-8")
+        print("\nSUCCESS. The new GOOGLE_OAUTH_REFRESH_TOKEN was saved to .env (not shown here). "
+              "Copy that line from .env into BOTH Railway services.")
+        return
     print("\n" + "=" * 70)
     print("SUCCESS. Add this line to your .env:\n")
     print(f"GOOGLE_OAUTH_REFRESH_TOKEN={creds.refresh_token}")

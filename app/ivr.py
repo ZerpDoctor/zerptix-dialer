@@ -1310,13 +1310,16 @@ def reactive_greeting(transcript: str) -> str | None:
 
 _HOLD_ANNOUNCE = re.compile(
     r"\b(please hold|hold please|hold on|one moment|just a moment|a moment please|hold while|please wait|"
-    r"will be with you|stay on the line|please stay on|connect(?:ing)? you)\b")
+    r"will be with you|stay on the line|please stay on|connect(?:ing)? you|"
+    r"be right with you|right with you|with you (?:shortly|momentarily|in a moment))\b")
 # Anchored: ONLY the disclosure itself. A looser pattern swallowed "this call will be recorded for quality
 # and training Circling, good evening" (speech-to-text dropped the period) and hid the person's greeting.
 _RECORDING_BOILERPLATE = re.compile(
     r"^(?:this call|all calls|calls|your call)\b[^.?!]{0,40}\b(?:recorded|monitored|recording)\b"
     r"(?: (?:for|to) (?:quality|training|monitoring|security|assurance)(?: (?:and|or|assurance|purposes|training|quality|monitoring))*)?$"
-    r"|^for (?:quality|training)(?: (?:and|or|assurance|purposes|training|quality|monitoring))*$|^thank you\b[ a-z]*$")
+    r"|^for (?:quality|training)(?: (?:and|or|assurance|purposes|training|quality|monitoring))*$|^thank you\b[ a-z]*$"
+    # "For quality assurance, your call is now being recorded" (PM Leary Restoration, 2026-10-06)
+    r"|^for (?:quality|training)[^.?!]{0,40}\bcalls?\b[^.?!]{0,30}\b(?:recorded|monitored|recording)$")
 
 
 def hold_pending(transcript: str) -> str | None:
@@ -1412,6 +1415,22 @@ _INTRO_OR_QUESTION = re.compile(
     r"\b(this is [a-z]+|my name is|speaking|how (can|may) (i|we) (help|assist)|can i help|may i help|hello)\b")
 
 
+def echoed_name_after_opening(transcript: str, company_name: str) -> bool:
+    """True if, after the opening sentence, a SHORT sentence repeats (part of) the company's own name --
+    "Thank you for choosing water removal services. This call may be recorded. Water removal." A person
+    picks up and says the name; a recording that only opens with the name and a disclosure ("You have reached
+    Miller Restoration. Call may be monitored and recorded...") has nothing after it."""
+    name_tokens = set(re.findall(r"[a-z0-9]+", (company_name or "").lower()))
+    if not name_tokens:
+        return False
+    sents = [x.strip() for x in re.split(r"[.?!]", (transcript or "").lower()) if x.strip()]
+    for s in sents[1:]:
+        toks = re.findall(r"[a-z0-9]+", s)
+        if 1 <= len(toks) <= 4 and set(toks) <= name_tokens and not _RECORDING_BOILERPLATE.match(s):
+            return True
+    return False
+
+
 def thin_answer_reason(tail: str) -> str | None:
     """Why an `answered` call rests on thin evidence, or None if it has a
     personal name, an offer to help, a question or a reactive "Hello?". Not a
@@ -1505,7 +1524,7 @@ def decide_tail(transcript: str, answered_by: str | None, company_name: str = ""
     if ring_seen and (d.outcome == "unknown" or d.classifier == "amd_fallback"):
         rv = ring_then_voice(transcript, answered_by)
         if rv:
-            return TailDecision("answered", "keyword", rv, False)
+            return TailDecision("answered", "rule", rv, False)
     return d
 
 
@@ -1539,24 +1558,24 @@ def _decide_tail(transcript: str, answered_by: str | None, company_name: str = "
     # A carrier / network message that the call itself failed ("unable to complete", "cannot connect your call at
     # the moment, try again later" -- Renewal Claim Solutions, ARCO 2026-10-05) is not a voicemail and not a miss.
     if any(p in low for p in _CALL_FAILED):
-        return TailDecision("unknown", "keyword", "carrier/network message: the call could not be completed", False)
+        return TailDecision("unknown", "rule", "carrier/network message: the call could not be completed", False)
 
     # Owner policy 2026-10-01: a company whose line is answered by its AI receptionist HAS answered
     # (Lightning Restoration, 2026-10-05, was left unknown).
     if _AI_RECEPTIONIST.search(low) and not any(p in low for p in _STRONG_VOICEMAIL_GREETING):
-        return TailDecision("answered", "keyword", "an AI receptionist answered (owner policy: counts as answered)", amd_guess == "voicemail")
+        return TailDecision("answered", "rule", "an AI receptionist answered (owner policy: counts as answered)", amd_guess == "voicemail")
 
     hp = hold_pending(transcript)
     if hp:
-        return TailDecision("extended_hold", "keyword", hp, False)
+        return TailDecision("extended_hold", "rule", hp, False)
 
     rg = reactive_greeting(transcript)
     if rg:
-        return TailDecision("answered", "keyword", rg, amd_guess == "voicemail")
+        return TailDecision("answered", "rule", rg, amd_guess == "voicemail")
 
     ph = post_hold_name_greeting(transcript, company_name)
     if ph:
-        return TailDecision("answered", "keyword", ph, amd_guess == "voicemail")
+        return TailDecision("answered", "rule", ph, amd_guess == "voicemail")
 
     def _from_keyword_or_amd(prefix: str) -> TailDecision:
         kw = classify_tail(transcript)
