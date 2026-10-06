@@ -57,6 +57,27 @@ def assess(row: dict) -> tuple[str, str]:
                                      "no solicitation", "no soliciting", "not accept any solicitation")):
         return "no", "do not contact: the number says it does not accept solicitation calls (do_not_call)"
 
+    # Owner policy 2026-10-06 (AllPro Restoration & Janitorial: pressed the emergency option, then 60s of nothing): a call
+    # that used the FULL hold budget and was hung up by us as normal is a proven miss -- 60 seconds is the standard we hold
+    # every company to. Not when our own tooling failed (classifier outage, dead stream) or a second press makes the final
+    # route unconfirmed (Rare Restoration), and never when the call ended early (that is ivr_unresolved, not a hold).
+    if outcome == "extended_hold":
+        try:
+            _dur = int(float(row.get("duration_sec") or 0))
+        except (TypeError, ValueError):
+            _dur = 0
+        # The budget is used when the master timer fired, or WE ended the call (we only hang up on a hold when the
+        # budget is spent), or the call ran the full length. A far end that dropped early is not a full hold.
+        if not ("hit 60s master timer" in notes or "ended by: us" in notes or _dur >= 58):
+            return "no", "extended_hold: the hold budget was not fully used"
+        if any(m in notes for m in _UNRELIABLE + _OUTAGE) or "stream: never connected" in notes or "stream: error" in notes:
+            return "no", "extended_hold: our own tooling was impaired during this call"
+        if len(digits) >= 2:
+            return "review", f"digits {','.join(digits)} pressed: the final route is unconfirmed"
+        if digits:
+            return "yes", f"pressed {digits[0]}, then waited the full 60s hold budget and nobody answered"
+        return "yes", "waited the full 60s hold budget and nobody answered"
+
     if outcome in _NOT_A_MISS:
         return "no", f"{outcome}: {_NOT_A_MISS[outcome]}"
     if outcome not in ("voicemail", "alt_miss", "gatekeeping_miss", "no_answer"):

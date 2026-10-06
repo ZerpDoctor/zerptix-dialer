@@ -27,11 +27,12 @@ class EmailSafety(unittest.TestCase):
         """Johnston pressed 0,0 (not the emergency option) and reached a voicemail."""
         self.assertEqual(assess(row("voicemail", "Please leave your name, number", "0,0"))[0], "no")
 
-    def test_extended_hold_is_never_email_safe(self):
-        """Rare Restoration: hung up at the timer, their manager answered."""
+    def test_extended_hold_without_the_full_budget_is_never_email_safe(self):
+        """Rare Restoration pressed 1 then 2 and was hung up while a transfer rang. Since 2026-10-06 a hold is a miss ONLY
+        when the full 60s budget was used and the route is a single confirmed press (see ExtendedHoldFullBudget)."""
         a, why = assess(row("extended_hold", "Please hold while we connect your call to emergency one.", "1,2"))
         self.assertEqual(a, "no")
-        self.assertIn("never a confirmed miss", why)
+        self.assertIn("not fully used", why)
 
     def test_answered_unknown_unresolved_disconnected_busy_are_no(self):
         for o in ("answered", "unknown", "ivr_unresolved", "disconnected", "busy"):
@@ -77,3 +78,47 @@ class EmailSafety(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtendedHoldFullBudget(unittest.TestCase):
+    """Owner policy 2026-10-06: pressed the emergency option, waited the full 60s, nobody answered = email safe."""
+
+    NOTE = "hit 60s master timer with no resolution; ended by: us (we hung up); ivr: rule: the menu names 1 as its emergency option; diag: press 1 @+9s"
+
+    def row(self, **kw):
+        d = {"company_name": "AllPro Restoration & Janitorial", "outcome": "extended_hold", "digits_sent": "1",
+             "ivr_transcript": "to speak with someone regarding emergency service, you must press one now. our business hours are monday",
+             "notes": self.NOTE}
+        d.update(kw)
+        return d
+
+    def test_the_allpro_call_is_email_safe(self):
+        from app import email_safety
+        self.assertEqual(email_safety.assess(self.row())[0], "yes")
+
+    def test_a_hold_that_ended_early_is_not(self):
+        from app import email_safety
+        self.assertEqual(email_safety.assess(self.row(notes="ended by: far end / network (call already over)"))[0], "no")
+
+    def test_our_own_outage_or_a_dead_stream_is_not(self):
+        from app import email_safety
+        self.assertEqual(email_safety.assess(self.row(notes=self.NOTE + "; anthropic unavailable (credit balance)"))[0], "no")
+        self.assertEqual(email_safety.assess(self.row(notes=self.NOTE + "; stream: never connected"))[0], "no")
+
+    def test_two_presses_stay_a_review(self):
+        from app import email_safety
+        self.assertEqual(email_safety.assess(self.row(digits_sent="1,1"))[0], "review")
+
+    def test_no_press_hold_for_the_full_budget_is_a_miss_too(self):
+        from app import email_safety
+        self.assertEqual(email_safety.assess(self.row(digits_sent=""))[0], "yes")
+
+    def test_a_hold_we_ended_ourselves_counts_as_the_full_budget(self):
+        from app import email_safety
+        r = self.row(digits_sent="", notes="tail: the greeting ends on a hold announcement ('we will be with you shortly'); ended by: us (we hung up)")
+        self.assertEqual(email_safety.assess(r)[0], "yes")
+
+    def test_a_hold_the_far_end_dropped_early_is_not(self):
+        from app import email_safety
+        r = self.row(digits_sent="", notes="ended by: far end / network (call already over)", duration_sec="41")
+        self.assertEqual(email_safety.assess(r)[0], "no")
