@@ -94,6 +94,11 @@ class Night20261007(tc.Outcomes):
         self.assertNotIn("911", [d for d, _ in ivr.parse_options("If this is a medical emergency, hang up and dial nine one one. Press two for service.")])
         self.assertEqual(ivr.quick_digit("For emergency service, press one. For billing, press two.")[0], "1")
 
+    def test_restoration_relief_a_voice_assistant_that_responds_is_an_ai_receptionist(self):
+        t = "I'm using a voice assistant to convert your voice to text and respond to you. If you want to continue, please stay on the call."
+        d = ivr.decide_tail(t, "machine_start", "Restoration Relief")
+        self.assertEqual((d.outcome, d.classifier), ("answered", "rule"))
+
     AERET = [-16, -19, -77, -77, -78, -20, -16, -18, -77, -77, -77, -21, -16, -18, -84, -53, -62, -32, -29, -32, -30, -31]
     ROYAL = [-81, -7, -13, -15, -21, -22, -74, -74, -73, -30, -21, -22, -73, -73, -73, -30, -21, -22, -74, -74]
     TOTAL_CARE = [-60, -8, -8, -23, -22, -17, -14, -49, -32, -19, -25, -29, -25, -23, -26, -22, -25, -22, -27, -30]

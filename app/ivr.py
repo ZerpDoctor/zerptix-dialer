@@ -515,7 +515,7 @@ class GatekeepingDecision:
 # receptionist... state your full name" was logged gatekeeping_miss, email_safe yes).
 _AI_RECEPTIONIST = re.compile(
     r"\b(this is (the|our|an?) (\w+ ){0,3}ai\b|\bai (\w+ ){0,2}(receptionist|assistant|agent)\b"
-    r"|virtual (receptionist|assistant))")
+    r"|virtual (receptionist|assistant)|voice assistant)")
 
 
 def looks_like_gatekeeping(transcript: str) -> GatekeepingLook:
