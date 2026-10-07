@@ -206,11 +206,14 @@ def compute_quarter_reset(row: QueueRow, local_now: datetime) -> dict | None:
         return None
     if _quarter(last) == _quarter(local_now.date()):
         return None
+    # Owner rule 2026-10-06: never redial sooner than sched_quarter_turn_min_days after the last call, even across the
+    # turn (companies called 2 weeks before the turn were redialed 2 weeks later). evaluate() already honours this field.
+    earliest = last + timedelta(days=CFG.sched_quarter_turn_min_days)
     return {
         "current_quarter_attempts": 0,
         "last_call_window": "",
         "this_quarter_status": STATUS_IN_PROGRESS,
-        "next_eligible_date": "",
+        "next_eligible_date": earliest.isoformat() if earliest > local_now.date() else "",
         "miss_timestamp": "",
         "consecutive_answered_count": 0,
         # Clearing this is what makes the reset happen ONCE. It used to stay in the old quarter, so every

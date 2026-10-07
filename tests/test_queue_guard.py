@@ -112,6 +112,37 @@ class QuarterResetOnce(unittest.TestCase):
         self.assertEqual([c for c in calls if c[0] == "many"], [])
 
 
+class QuarterTurnMinimumGap(unittest.TestCase):
+    """Owner rule 2026-10-06: a company called 2 weeks before the turn must not be redialed 2 weeks later -- at least
+    sched_quarter_turn_min_days (42) after the last call."""
+
+    def row(self, last_call):
+        from app.queue_model import row_from_dict
+        d = {h: "" for h in HEADER}
+        d.update({"company_name": "Gap Co", "phone_e164": "+12025551234", "timezone": "America/New_York", "state": "VA",
+                  "current_quarter_attempts": "1", "this_quarter_status": "confirmed_miss", "last_call_date": last_call,
+                  "last_outcome": "voicemail", "next_eligible_date": ""})
+        return row_from_dict(d, row_number=2)
+
+    def test_a_company_called_two_weeks_before_the_turn_waits_until_six_weeks_after_that_call(self):
+        from datetime import datetime
+        r = self.row("2026-09-24")
+        local = datetime(2026, 10, 6, 21, 35, tzinfo=timezone.utc)
+        reset = scheduler.compute_quarter_reset(r, local)
+        self.assertEqual(reset["next_eligible_date"], "2026-11-05")
+        for k, v in reset.items():
+            r.set(k, v)
+        self.assertEqual(scheduler.evaluate(r, ET_EVENING).action, "skip")           # 10-06: held
+        late = datetime(2026, 11, 9, 2, 35, tzinfo=timezone.utc)                      # Sun 11-08, 9:35pm Eastern
+        self.assertEqual(scheduler.evaluate(r, late).action, "dial")
+
+    def test_an_old_call_is_not_held_at_all(self):
+        from datetime import datetime
+        r = self.row("2026-06-20")
+        reset = scheduler.compute_quarter_reset(r, datetime(2026, 10, 6, 21, 35, tzinfo=timezone.utc))
+        self.assertEqual(reset["next_eligible_date"], "")
+
+
 class _OpenGate:
     def allow(self, rows):
         return True, ""

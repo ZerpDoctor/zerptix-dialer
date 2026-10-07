@@ -198,6 +198,9 @@ class Config:
     sched_deep_night_window: str = "02:00-04:00"
     sched_calling_days: str = "Sun,Mon,Tue,Wed,Thu"
     sched_min_days_between_attempts: int = 10
+    # Across a quarter turn the 10-day gap is not enough: a company called 2 weeks before the turn was redialed 2 weeks
+    # later (2026-10-06). Owner rule: at least this many days after the last call, whatever quarter it was in.
+    sched_quarter_turn_min_days: int = 42
     sched_max_attempts_per_quarter: int = 4
     sched_first_window: str = "evening"
     sched_tick_seconds: int = 60
@@ -367,6 +370,7 @@ def load() -> Config:
         sched_deep_night_window=_get("SCHED_DEEP_NIGHT_WINDOW", "02:00-04:00"),
         sched_calling_days=_get("SCHED_CALLING_DAYS", "Sun,Mon,Tue,Wed,Thu"),
         sched_min_days_between_attempts=int(_get("SCHED_MIN_DAYS_BETWEEN_ATTEMPTS", "10") or "10"),
+        sched_quarter_turn_min_days=int(_get("SCHED_QUARTER_TURN_MIN_DAYS", "42") or "42"),
         sched_max_attempts_per_quarter=int(_get("SCHED_MAX_ATTEMPTS_PER_QUARTER", "4") or "4"),
         sched_first_window=_get("SCHED_FIRST_WINDOW", "evening"),
         sched_tick_seconds=int(_get("SCHED_TICK_SECONDS", "60") or "60"),
