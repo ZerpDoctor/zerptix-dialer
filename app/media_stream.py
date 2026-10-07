@@ -92,6 +92,37 @@ def ringback_pattern(energy: list) -> bool:
     return all(g and sum(1 for e in g if e < -60) >= max(1, len(g) - 1) for g in gaps)
 
 
+def ringing_after_greeting(energy: list) -> bool:
+    """True if SOMEWHERE in the call's levels (not only from the start) there is a stretch of >=10s that looks like a
+    phone ringing -- a greeting, then the line ringing on: a transfer that has not been picked up. Aeret and Royal
+    Restoration, 2026-10-06: "Thank you for calling." and then 3-on / 3-off ringing until we hung up."""
+    n = len(energy)
+    for i in range(0, max(n - 9, 0)):
+        for j in range(i + 10, n + 1):
+            w = energy[i:j]
+            if not ringback_pattern(w):
+                continue
+            # A ring tone is the same loudness every time and the gaps between rings are digital silence. Stricter
+            # than ringback_pattern alone because this scans EVERY stretch of an answered call (a pair of speech
+            # bursts with a pause between them passes the looser test).
+            runs, k = [], 0
+            while k < len(w):
+                if w[k] > -45:
+                    s = k
+                    while k < len(w) and w[k] > -45:
+                        k += 1
+                    runs.append((s, k))
+                else:
+                    k += 1
+            if len(runs) < 2:
+                continue
+            means = [sum(w[s:e]) / (e - s) for s, e in runs]
+            gaps = [w[e1:s2] for (_, e1), (s2, _) in zip(runs, runs[1:])]
+            if max(means) - min(means) <= 6 and all(g and max(g) < -65 for g in gaps):
+                return True
+    return False
+
+
 @dataclass
 class StreamBuffer:
     """Accumulates Deepgram's finalized transcript segments for one call.
@@ -143,6 +174,10 @@ class StreamBuffer:
     _e_sum: float = 0.0
     _e_n: int = 0
     results: int = 0                     # non-empty transcript results received
+    # Set once the stream handler has asked Deepgram to flush and collected what came back. A call the far
+    # end hangs up is resolved from the status callback, which can land before the last seconds of speech
+    # were transcribed -- _resolve waits on this (briefly) before it reads the buffer.
+    flushed: threading.Event = field(default_factory=threading.Event)
 
     def note_activity(self) -> None:
         now = time.time()
@@ -363,10 +398,19 @@ def handle_signalwire_stream(ws, call_sid: str) -> None:
     except Exception as e:  # noqa: BLE001
         log.warning("SignalWire stream handler for call_sid=%s ending: %s", call_sid, e)
     finally:
+        # Closing Deepgram's socket outright throws away whatever it had heard but not yet finalized -- the last
+        # second or two of the call (2026-10-06: Pro Services' menu began in the final 5s and never reached the
+        # transcript; Greenville's text ends "Otherwise, plea"). CloseStream makes it flush its finals first.
+        try:
+            dg_ws.send(json.dumps({"type": "CloseStream"}))
+            reader_thread.join(timeout=2.5)
+        except Exception:  # noqa: BLE001
+            pass
         stop_event.set()
         try:
             dg_ws.close()
         except Exception:  # noqa: BLE001
             pass
+        buf.flushed.set()
         log.info("Media stream for call_sid=%s ended, %d audio frames forwarded",
                   call_sid, frames_forwarded)

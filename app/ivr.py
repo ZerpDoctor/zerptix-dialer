@@ -39,7 +39,11 @@ _DIGIT_WORDS = {
 }
 # "dial two hundred" (R And S Restores, 2026-10-02: the emergency line is extension 200 and we pressed 2).
 # Only whole hundreds -- never an arbitrary 3-digit number, or "dial 911" would become an option.
-_DIGIT_TOKEN = (r"(?:(?:one|two|three|four|five|six|seven|eight|nine)\s+hundred|[1-9]00|[0-9]"
+# "dial one one eight" is extension 118 (Prime Aire Mold Services, 2026-10-06: we pressed 1 and got "that extension is not
+# recognized"). Three or four spoken digits in a row; never "nine one one".
+_SPOKEN_EXT = (r"(?!nine[\s-]+one[\s-]+one)(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)"
+               r"(?:[\s-]+(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)){2,3}")
+_DIGIT_TOKEN = (r"(?:" + _SPOKEN_EXT + r"|(?:one|two|three|four|five|six|seven|eight|nine)\s+hundred|[1-9]00|[0-9]"
                 r"|zero|one|two|three|four|five|six|seven|eight|nine|pound|hash|star)")
 _PRESS_VERB = r"(?:press|select|dial|enter|push|choose|hit|key in)"
 
@@ -579,7 +583,9 @@ _EMERGENCY_SERVICES_NUMBER = re.compile(r"\b(911|nine one one)\b")
 
 
 _SEND_ME_TEXT = re.compile(r"\b(?:send|shoot|drop)\s+(?:me|us)\s+(?:a|an)\s+(?:quick\s+|short\s+)?(?:text|e-?mail)\b")
-_HOLD_WHILE_CONNECT = re.compile(r"\b(?:please\s+)?hold(?:\s+on)?\s+while\s+(?:i|we)(?:\s+am|\s+are)?\s+(?:try|trying)(?:ing)?\s+to\s+connect\s+you\b")
+# "Please hold / wait while I try to connect you" is a HOLD announcement. Mountain View, LLC 2026-10-06 ("Please wait
+# while I try to connect you.") was logged alt_miss, email_safe yes, and hung up on at 14s.
+_HOLD_WHILE_CONNECT = re.compile(r"\b(?:please\s+)?(?:hold|wait)(?:\s+on)?\s+while\s+(?:i|we)(?:\s+am|\s+are)?\s+(?:(?:try|trying)(?:ing)?\s+to\s+)?connect(?:ing)?\s+(?:you|your\s+call)\b")
 
 
 def _emergency_then_spoken_number(t: str) -> bool:
@@ -682,6 +688,9 @@ def _norm_digit(tok: str) -> str:
     m = re.fullmatch(r"(one|two|three|four|five|six|seven|eight|nine)\s+hundred", t)
     if m:
         return _DIGIT_WORDS[m.group(1)] + "00"
+    parts = re.split(r"[\s-]+", t)
+    if len(parts) >= 3 and all(w in _DIGIT_WORDS and _DIGIT_WORDS[w].isdigit() for w in parts):
+        return "".join(_DIGIT_WORDS[w] for w in parts)
     return _DIGIT_WORDS.get(t, t)
 
 
@@ -889,7 +898,10 @@ def _option_clause(t: str, digit: str) -> tuple[str, bool]:
 _SOLE_NOT_THE_WAY = re.compile(
     r"\b(message|voicemail|voice mail|mailbox|record\w*|repeat|billing|payments?|pay|account\w*|employ\w*|career\w*|jobs?|"
     r"spanish|espanol|directory|extension|sales|marketing|vendors?|invoice\w*|hear|again|menu|previous|return|"
-    r"hang up|disconnect|opt out|unsubscribe|finished|done|tone|cancel|janitorial|pound|star)\b")
+    r"hang up|disconnect|opt out|unsubscribe|finished|done|tone|cancel|janitorial|pound|star|"
+    # American Property Restoration 2026-10-06: "If you have a question about an existing service, please dial two"
+    # was the first sentence of a longer menu; we pressed 2 (existing customers) before the rest was read.
+    r"existing|current|ongoing|previous|status|follow[- ]?up)\b")
 
 
 def _sole_option_is_final(t: str, clause: str) -> bool:
@@ -939,6 +951,9 @@ _NOT_DAMAGE_SERVICE = re.compile(
     r"\b(existing|current customer|billing|account\w*|payroll|employ\w*|career\w*|jobs?|hiring|sales|marketing|"
     r"project management|roofing|invoice\w*|vendors?|adjusters?|claim status|status of|general|all other|any other|"
     r"other (?:inquir|question|call)|directory|extension|leave a message|voicemail|mailbox)\b")
+
+
+_CUSTOMER_TYPE = re.compile(r"\b(residential|residence|homeowners?|home|house|commercial|business|multi[- ]?family)\b")
 
 
 def _clause_damage_service(clause: str) -> bool:
@@ -1000,6 +1015,21 @@ def quick_digit(transcript: str, require_complete: bool = False) -> tuple[str, s
             if require_complete and not complete:
                 return None
             return digit, f"the menu offers {digit} for a caller with water/fire/mold damage", False
+    # (4) the menu only asks what KIND of customer is calling ("Press one for residential. Press two for
+    # commercial.", Lion Water Damage Restoration 2026-10-06 -- we never pressed and logged it unresolved). Neither
+    # side is the wrong line; take the homeowner's.
+    if len(digits) >= 2:
+        picks = []
+        for digit in digits:
+            clause, complete = _option_clause(t, digit)
+            m = _CUSTOMER_TYPE.search(clause)
+            if not m or _SOLE_NOT_THE_WAY.search(clause) or _NOT_DAMAGE_SERVICE.search(clause) or not complete:
+                return None
+            picks.append((digit, m.group(1)))
+        for digit, kind in picks:
+            if kind in ("residential", "residence", "home", "homeowner", "homeowners", "house"):
+                return digit, f"the menu only splits residential / commercial callers; {digit} is the homeowner line", False
+        return picks[0][0], f"the menu only splits callers by type; {picks[0][0]} is the first", False
     return None
 
 
@@ -1265,6 +1295,19 @@ def menu_replayed_after_press(raw_tail: str) -> str | None:
     return "the menu was playing again after the press; no person and no voicemail greeting was heard"
 
 
+_QUEUE_OR_CALLBACK = re.compile(
+    r"higher than (?:normal|usual) call volume|your place in (?:the )?(?:queue|line)|callback feature|"
+    r"your confirmation number|all (?:of )?our (?:agents|representatives|associates|specialists) are (?:currently )?(?:busy|assisting|helping)")
+
+
+def queue_or_callback(raw: str) -> str | None:
+    """Reason if the text is a call QUEUE: "experiencing higher than normal call volume ... press one to receive a
+    callback" (VIP Restoration, 2026-10-06, pressed 1 twice, got a callback confirmation number). Nobody has answered
+    and the menu text that follows is the queue's own, so it is a hold, not a menu playing again."""
+    m = _QUEUE_OR_CALLBACK.search((raw or "").lower())
+    return f"a call queue / callback system ({m.group(0)!r})" if m else None
+
+
 _NO_SOLICITATION = ("does not accept solicitation", "doesn't accept solicitation", "do not accept solicitation",
                     "no solicitation", "no soliciting", "not accept any solicitation")
 
@@ -1278,7 +1321,9 @@ def refuses_solicitation(transcript: str) -> bool:
 
 
 _ASKS_CALLER = re.compile(
-    r"\bis this (?:a|an) [^.?!]{0,70}emergency\s*\?|\bwhat(?:'s| is) your emergency\b|\bwho am i (?:speaking|talking) (?:to|with)\b")
+    r"\bis this (?:a|an) [^.?!]{0,70}emergency\s*\?|\bwhat(?:'s| is) your emergency\b|\bwho am i (?:speaking|talking) (?:to|with)\b"
+    # "Thank you for calling X. And you're calling about ...?" (Next Level Restoration, 2026-10-06)
+    r"|\band (?:you(?:'re| are)|are you) calling about\b")
 _CALL_FAILED = ("unable to complete", "cannot connect your call", "can't connect your call", "could not be completed",
                 "cannot be connected at this time")
 _OFFER_HELP = re.compile(r"\b(how (can|may) (i|we) (help|assist|direct)|can i help|may i help|what can i do)\b")
@@ -1428,6 +1473,17 @@ def echoed_name_after_opening(transcript: str, company_name: str) -> bool:
         toks = re.findall(r"[a-z0-9]+", s)
         if 1 <= len(toks) <= 4 and set(toks) <= name_tokens and not _RECORDING_BOILERPLATE.match(s):
             return True
+    # A recording disclosure first, then a sentence that names the WHOLE company with a few words around it
+    # ("All calls are recorded for quality and training purposes. ... It's a great day at High Tide Restoration and
+    # Cleaning." -- High Tide, 2026-10-06). Not the "thank you for calling X" / "you've reached X" a recording opens with.
+    if sents and _OPENER_RECORDED.search(sents[0]):
+        want = _name_tokens(company_name)
+        if len(want) >= 2:
+            for s in sents[1:]:
+                toks = re.findall(r"[a-z0-9]+", s)
+                if (want <= set(toks) and len(toks) <= len(want) + 7 and not _OPENER_THANKS.match(s)
+                        and not re.match(r"^(you'?ve|you have) reached", s)):
+                    return True
     return False
 
 

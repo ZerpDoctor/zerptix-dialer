@@ -402,7 +402,7 @@ def _compute_outcome(rec) -> tuple[str, str]:
             # two or Your call is important to us" -- Quality Cleaning, a real hold). Only a menu that
             # played again in full -- several options, or the same option twice -- is a replay.
             _opts = {m.group("d1") for m in ivr._OPT_ANCHOR.finditer(_raw_cap.lower()) if m.group("d1")}
-            if _replay and (len(_opts) >= 2 or ivr.menu_repeats(_raw_cap)):
+            if _replay and not ivr.queue_or_callback(_raw_cap) and (len(_opts) >= 2 or ivr.menu_repeats(_raw_cap)):
                 return "ivr_unresolved", _replay + "; check recording"
         if getattr(rec, "ring_seen", False) and not cap_transcript.strip() and not rec.digits_sent:
             return "unknown", "still ringing when the budget ran out (ring pattern, no text) -- nobody picked up; not a miss claim"
@@ -447,6 +447,14 @@ def _compute_outcome(rec) -> tuple[str, str]:
             return "unknown", "call completed; AMD gave no usable result"
         return "unknown", ""
 
+    # An AI receptionist that introduces itself AND offers help counts as an answer wherever in the call it spoke --
+    # not only in the text after the last digit (Rock Environmental, 2026-10-06: it picked up between our two
+    # presses, so the post-press text was only its "I didn't catch that" apologies).
+    _whole = rec.transcript_accum.lower()
+    if (ivr._AI_RECEPTIONIST.search(_whole) and ivr._OFFER_HELP.search(_whole)
+            and not any(p in _whole for p in ivr._STRONG_VOICEMAIL_GREETING)):
+        return "answered", "tail: an AI receptionist answered (owner policy: counts as answered)"
+
     if rec.digits_sent:
         # After a digit press, if all that came back is the menu being read out
         # (options, no person after them) nobody has picked up. Judged on the
@@ -455,9 +463,17 @@ def _compute_outcome(rec) -> tuple[str, str]:
         # from "...press five for billing. Thank you for calling Bone Dry
         # Services."
         _raw_post = rec.transcript_accum[rec.transcript_at_last_digit:]
-        _mro = ivr.menu_replayed_after_press(_raw_post) or ivr.menu_recording_only(_raw_post)
+        _queue = ivr.queue_or_callback(_raw_post)
+        _mro = None if _queue else (ivr.menu_replayed_after_press(_raw_post) or ivr.menu_recording_only(_raw_post))
         if _mro:
             return "ivr_unresolved", f"tail: {_mro}"
+        if _queue:
+            # Pressed, and what came back is the company's call queue (VIP Restoration: "higher than normal call
+            # volume ... press one for a callback"). Nobody answered; it is a hold, once the hold budget was used.
+            _el = STORE.seconds_since_answered(rec.call_sid)
+            if 0.0 < _el < CFG.ivr_hold_budget_seconds - 10:
+                return "ivr_unresolved", f"tail: {_queue}; the call ended after {int(_el)}s, before the hold budget was used"
+            return "extended_hold", f"tail: {_queue}"
 
     decision = ivr.decide_tail(transcript, answered_by, rec.company_name, ring_seen=getattr(rec, "ring_seen", False))
     note = f"tail: {decision.reasoning}" if decision.reasoning else ""
@@ -480,6 +496,12 @@ def _compute_outcome(rec) -> tuple[str, str]:
     # at the other two resolution sites: a transcript announcing a menu that
     # never actually arrived shouldn't be trusted even via a real read --
     # see ivr.mentions_incoming_menu's docstring for the real incident.
+    # A bare greeting and then the line RINGING is a transfer nobody has picked up, whatever AMD said (Aeret, Royal
+    # Restoration 2026-10-06: "Thank you for calling." + 3-on/3-off ringback until we hung up).
+    if decision.outcome == "answered" and decision.classifier != "rule" and ivr.thin_answer_reason(transcript):
+        _rb = media_stream.peek_buffer(rec.call_sid)
+        if _rb is not None and media_stream.ringing_after_greeting(list(_rb.energy)):
+            return "unknown", f"thin: only a greeting was heard, then the line rang (a transfer nobody picked up) ({decision.reasoning})"
     confident = (decision.outcome != "unknown" and decision.classifier != "amd_fallback"
                  and not ivr.mentions_incoming_menu(transcript))
     # A genuine, confirmed LIVE pickup always outranks anything below -- a
@@ -731,13 +753,21 @@ def _resolve(call_sid: str, hangup: bool = True, recovered: bool = False) -> Non
         # complete at least one real turn (menu navigation, a tail read)
         # already has its transcript built the normal way; this is purely
         # for the case where that never got the chance to happen at all.
-        pre = STORE.get(call_sid)
-        if pre is not None and not pre.transcript_accum:
-            buffered = media_stream.get_buffer(call_sid).full_text()
-            if buffered:
-                log.info("Backfilling transcript from stream buffer for call_sid=%s (no turn ever completed): %r",
-                          call_sid, buffered[:200])
-                STORE.update(call_sid, transcript_accum=buffered)
+        _sb = media_stream.peek_buffer(call_sid)
+        if _sb is not None:
+            # A call the far end hung up: let the stream handler finish flushing Deepgram first (the last seconds of
+            # speech are still being transcribed when the status callback lands).
+            if not hangup and _sb.connected_at is not None and _sb.error is None:
+                _sb.flushed.wait(3.0)
+            # Everything the buffer holds that no turn has read yet. Turns only read every few seconds, so the last
+            # utterance before a hang-up -- often the menu itself -- was never in the transcript (Pro Services,
+            # 2026-10-06: the call ended as the menu began). When no turn ever completed this is the whole call.
+            _unread = _sb.text_since_last_read()
+            if _unread.strip():
+                pre = STORE.get(call_sid)
+                if pre is not None:
+                    log.info("Merging unread stream text into the transcript for call_sid=%s: %r", call_sid, _unread[:200])
+                    STORE.update(call_sid, transcript_accum=((pre.transcript_accum + " ") if pre.transcript_accum else "") + _unread.strip())
     # snapshot, not get(): _compute_outcome() and _build_row() both read rec's
     # fields, and a concurrent webhook thread mutating the live record in
     # between the two would decide the outcome from one instant and build the
