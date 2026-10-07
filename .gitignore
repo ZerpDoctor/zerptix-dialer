@@ -46,3 +46,6 @@ tests/golden/integrated_undo.json
 tests/golden/quarter_turn_gap_undo.json
 tests/golden/state_tz_repair_undo.json
 tests/golden/gmb_phone_swap_undo.json
+tests/golden/phone_search_fix_undo.json
+phone_review.csv
+tests/golden/invalid_phone_dnc_undo.json
