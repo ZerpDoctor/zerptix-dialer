@@ -143,6 +143,96 @@ class QuarterTurnMinimumGap(unittest.TestCase):
         self.assertEqual(reset["next_eligible_date"], "")
 
 
+class OneCompanyOnTwoNumbers(unittest.TestCase):
+    """2026-10-06: 21 companies (Integrated Restoration, Rock Emergency, Royal Water Damage Restoration...) sit on two
+    Queue rows with the same website and were dialed on both numbers one day apart."""
+
+    def setUp(self):
+        import dataclasses
+        self._cfg = scheduler.CFG
+        scheduler.CFG = dataclasses.replace(scheduler.CFG, signalwire_from_numbers=["+15550000001"], sched_sibling_block=True)
+        self._counts, self._rr = scheduler._pool_dial_counts, scheduler._pool_rr_index
+
+    def tearDown(self):
+        scheduler.CFG = self._cfg
+        scheduler._pool_dial_counts, scheduler._pool_rr_index = self._counts, self._rr
+
+    def rows(self, **second):
+        out = []
+        for i, extra in enumerate(({}, second)):
+            d = {h: "" for h in HEADER}
+            d.update({"company_name": f"Twin Co {i}", "phone_e164": f"+1202555{2000 + i}", "timezone": "America/New_York", "state": "VA",
+                      "domain": "http://www.twinco.com/?utm=1" if i == 0 else "https://twinco.com", "current_quarter_attempts": "0",
+                      "this_quarter_status": "in_progress"})
+            d.update(extra)
+            out.append(d)
+        return out
+
+    def run_tick(self, rows):
+        from app.queue_backend import MemoryQueue
+        scheduler._pool_dial_counts = {}
+        q = MemoryQueue(rows)
+        return scheduler.tick(ET_EVENING, queue=q, dialer=lambda *a, **k: "CAx", dry_run=True, activity_fn=lambda day: [], gate=_OpenGate())
+
+    def actions(self, rows):
+        return [(d.row.company_name, d.action, d.reason) for d in self.run_tick(rows) if d.action != "reset"]
+
+    def test_both_numbers_eligible_only_one_is_dialed_in_a_tick(self):
+        acts = self.actions(self.rows())
+        self.assertEqual([a[1] for a in acts], ["would-dial", "skip"])
+        self.assertIn("already being dialed", acts[1][2])
+
+    def test_a_sibling_called_two_days_ago_blocks_this_number(self):
+        r = self.rows()
+        r[0].update({"current_quarter_attempts": "1", "last_call_date": "2026-09-27", "last_outcome": "answered", "this_quarter_status": "in_progress",
+                     "last_call_window": "evening", "next_eligible_date": "2026-10-07"})
+        acts = self.actions(r)
+        self.assertEqual(acts[1][1], "skip")
+        self.assertIn("called on another number", acts[1][2])
+
+    def test_a_sibling_called_long_ago_does_not_block(self):
+        r = self.rows()
+        r[0].update({"current_quarter_attempts": "1", "last_call_date": "2026-09-10", "last_call_window": "evening", "next_eligible_date": "2026-09-20"})
+        self.assertEqual(self.actions(r)[1][1], "would-dial")
+
+    def test_a_sibling_emailed_or_do_not_call_blocks(self):
+        r = self.rows(); r[0]["email_track"] = "2026-09-20"
+        self.assertIn("was emailed", self.actions(r)[1][2])
+        r = self.rows(); r[0]["do_not_call"] = "true"
+        self.assertIn("do-not-call", self.actions(r)[1][2])
+
+    def test_different_websites_and_shared_hosts_are_not_the_same_company(self):
+        self.assertEqual([a[1] for a in self.actions(self.rows(domain="http://othercompany.com"))], ["would-dial", "would-dial"])
+        r = self.rows(domain="https://www.facebook.com/twinco")
+        r[0]["domain"] = "https://www.facebook.com/twinco"
+        self.assertEqual([a[1] for a in self.actions(r)], ["would-dial", "would-dial"])
+
+    def test_the_switch_turns_it_off(self):
+        import dataclasses
+        scheduler.CFG = dataclasses.replace(scheduler.CFG, sched_sibling_block=False)
+        self.assertEqual([a[1] for a in self.actions(self.rows())], ["would-dial", "would-dial"])
+
+
+class ExplicitZeroCapIsOff(unittest.TestCase):
+    def test_zero_switches_a_number_off_and_unset_stays_unlimited(self):
+        import dataclasses
+        orig = scheduler.CFG
+        try:
+            scheduler.CFG = dataclasses.replace(orig, signalwire_from_numbers=["+1A", "+1B", "+1C"],
+                                                signalwire_nightly_caps={"+1A": 0, "+1B": 2}, sched_nightly_cap=0)
+            counts, rr, picked = {}, 0, []
+            for _ in range(6):
+                n, rr = scheduler.pick_pool_number(counts, rr)
+                picked.append(n)
+                if n:
+                    counts[n] = counts.get(n, 0) + 1
+            self.assertNotIn("+1A", picked)                       # explicit 0 = off
+            self.assertEqual(counts["+1B"], 2)                    # capped at 2
+            self.assertEqual(counts["+1C"], 4)                    # no entry = unlimited, takes the rest
+        finally:
+            scheduler.CFG = orig
+
+
 class _OpenGate:
     def allow(self, rows):
         return True, ""

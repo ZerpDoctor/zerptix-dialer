@@ -112,7 +112,8 @@ GATE = health.DialGate()
 
 
 def _cap_for(number: str) -> int:
-    """0 (or unset) means unlimited for that number."""
+    """Unset (or the global default 0) means unlimited for that number. An explicit 0 for a number in
+    SIGNALWIRE_NIGHTLY_CAPS means OFF -- pick_pool_number never chooses it."""
     return CFG.signalwire_nightly_caps.get(number, CFG.sched_nightly_cap)
 
 
@@ -126,6 +127,10 @@ def pick_pool_number(pool_counts: dict[str, int], rr_index: int) -> tuple[str | 
     for _ in range(len(pool)):
         number = pool[rr_index % len(pool)]
         rr_index += 1
+        # An EXPLICIT 0 in SIGNALWIRE_NIGHTLY_CAPS switches that number off (2026-10-06: "+13292064627:0" meant unlimited
+        # and a dry run planned ~639 calls from the spam-labelled number). A number with no entry stays uncapped.
+        if CFG.signalwire_nightly_caps.get(number) == 0:
+            continue
         cap = _cap_for(number)
         if not cap or pool_counts.get(number, 0) < cap:
             return number, rr_index
@@ -271,6 +276,38 @@ class Decision:
     reason: str
     local_now: datetime | None = None
     window: str | None = None
+
+
+# Websites that are not one company's own (a Facebook page, a directory listing): never a basis for "same company".
+_SHARED_SITE_HOSTS = ("facebook.com", "instagram.com", "linktr.ee", "yelp.com", "google.com", "business.site",
+                      "wixsite.com", "godaddysites.com", "linkedin.com", "nextdoor.com")
+
+
+def site_key(row: QueueRow) -> str:
+    """The company's own website host, lower-cased without scheme / www / path -- or "" when the row has none that is
+    its own. Two Queue rows with the same key are the same company on two phone numbers."""
+    host = re.sub(r"^https?://(www\.)?|[/?#].*$", "", (row.domain or "").strip().lower())
+    if not host or "." not in host or any(host == h or host.endswith("." + h) for h in _SHARED_SITE_HOSTS):
+        return ""
+    return host
+
+
+def sibling_block(row: QueueRow, siblings: list[QueueRow], today: date) -> str | None:
+    """Why this row must not be dialed because ANOTHER row of the same company (same website) says so, else None:
+    a sibling is do-not-call, was emailed within the hold, or was called less than the minimum gap ago. Integrated
+    Restoration, Rock Emergency, Royal Water Damage Restoration and 18 more were dialed on two numbers one day apart."""
+    for sib in siblings:
+        if sib.is_dnc:
+            return f"another number of this company ({sib.phone_e164}) is do-not-call"
+        if emailed_this_quarter(sib.email_track, today):
+            return f"another number of this company ({sib.phone_e164}) was emailed (email_track={sib.email_track!r})"
+        try:
+            last = date.fromisoformat(sib.last_call_date) if sib.last_call_date else None
+        except ValueError:
+            last = None
+        if last is not None and (today - last).days < CFG.sched_min_days_between_attempts:
+            return f"this company was called on another number ({sib.phone_e164}) on {last.isoformat()}"
+    return None
 
 
 def evaluate(row: QueueRow, now_utc: datetime) -> Decision:
@@ -535,11 +572,28 @@ def tick(now_utc: datetime | None = None, *, queue=None, dialer=None,
     if pending_resets and not dry_run:
         queue.update_many(pending_resets)
 
+    by_site: dict[str, list[QueueRow]] = {}
+    if CFG.sched_sibling_block:
+        for r in all_rows:
+            k = site_key(r)
+            if k:
+                by_site.setdefault(k, []).append(r)
+    dialed_sites: set[str] = set()
+
     for row in all_rows:
         d = evaluate(row, now_utc)
         if d.action != "dial":
             out.append(d)
             continue
+
+        site = site_key(row) if CFG.sched_sibling_block else ""
+        if site:
+            why = sibling_block(row, [s for s in by_site.get(site, []) if s is not row], d.local_now.date())
+            if why is None and site in dialed_sites:
+                why = "this company is already being dialed on another number this tick"
+            if why:
+                out.append(Decision(row, "skip", why, d.local_now, d.window))
+                continue
 
         if not dry_run:
             if gate_verdict is None:
@@ -568,6 +622,8 @@ def tick(now_utc: datetime | None = None, *, queue=None, dialer=None,
             out.append(Decision(row, "would-dial", f"{d.reason}, from={chosen_number}",
                                 d.local_now, d.window))
             pool_counts[chosen_number] = pool_counts.get(chosen_number, 0) + 1
+            if site:
+                dialed_sites.add(site)
             continue
 
         local_date = d.local_now.date()
@@ -595,6 +651,8 @@ def tick(now_utc: datetime | None = None, *, queue=None, dialer=None,
             note = f"{d.window} attempt #{fields['current_quarter_attempts']} sid={call_sid} from={chosen_number}"
 
         pool_counts[chosen_number] = pool_counts.get(chosen_number, 0) + 1
+        if site:
+            dialed_sites.add(site)
         _dialed_sids[call_sid] = (chosen_number, now_utc.date())
         out.append(Decision(row, "dialed", note, d.local_now, d.window))
 
@@ -634,7 +692,7 @@ def _print(decisions: list[Decision]) -> None:
                     len(gate_skips), gate_skips[0].reason)
     if CFG.signalwire_from_numbers:
         usage = ", ".join(
-            f"{n}={_pool_dial_counts.get(n, 0)}/{_cap_for(n) or '∞'}"
+            f"{n}={_pool_dial_counts.get(n, 0)}/{'off' if CFG.signalwire_nightly_caps.get(n) == 0 else (_cap_for(n) or '∞')}"
             for n in CFG.signalwire_from_numbers
         )
         log.info("  pool usage today: %s", usage)

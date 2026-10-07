@@ -126,6 +126,8 @@ class QueueRow:
     def timezone(self) -> str: return self._g("timezone")
     @property
     def state(self) -> str: return self._g("state")
+    @property
+    def domain(self) -> str: return self._g("domain")
 
     # gating
     @property

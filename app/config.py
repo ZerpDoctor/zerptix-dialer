@@ -201,6 +201,9 @@ class Config:
     # Across a quarter turn the 10-day gap is not enough: a company called 2 weeks before the turn was redialed 2 weeks
     # later (2026-10-06). Owner rule: at least this many days after the last call, whatever quarter it was in.
     sched_quarter_turn_min_days: int = 42
+    # One company, several Queue rows (same website, different numbers): treat it as ONE company when deciding to dial
+    # (2026-10-06: 21 companies were called on two numbers within two days).
+    sched_sibling_block: bool = True
     sched_max_attempts_per_quarter: int = 4
     sched_first_window: str = "evening"
     sched_tick_seconds: int = 60
@@ -371,6 +374,7 @@ def load() -> Config:
         sched_calling_days=_get("SCHED_CALLING_DAYS", "Sun,Mon,Tue,Wed,Thu"),
         sched_min_days_between_attempts=int(_get("SCHED_MIN_DAYS_BETWEEN_ATTEMPTS", "10") or "10"),
         sched_quarter_turn_min_days=int(_get("SCHED_QUARTER_TURN_MIN_DAYS", "42") or "42"),
+        sched_sibling_block=_bool("SCHED_SIBLING_BLOCK", True),
         sched_max_attempts_per_quarter=int(_get("SCHED_MAX_ATTEMPTS_PER_QUARTER", "4") or "4"),
         sched_first_window=_get("SCHED_FIRST_WINDOW", "evening"),
         sched_tick_seconds=int(_get("SCHED_TICK_SECONDS", "60") or "60"),
