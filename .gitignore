@@ -44,3 +44,5 @@ tonight_corrections_undo_1007b.json
 tests/golden/phone_fix_1st_call_undo.json
 tests/golden/integrated_undo.json
 tests/golden/quarter_turn_gap_undo.json
+tests/golden/state_tz_repair_undo.json
+tests/golden/gmb_phone_swap_undo.json
