@@ -323,6 +323,11 @@ def evaluate(row: QueueRow, now_utc: datetime) -> Decision:
     # logged as misses and sent to email. Never dial (or count) one.
     if not re.fullmatch(r"\+1[2-9]\d{9}", row.phone_e164 or ""):
         return Decision(row, "skip", f"FLAG: phone is not a valid US number ({row.phone_e164!r})", local)
+    # Placeholder numbers from the Clay import: +19999999999, +16666666666, +13333333333, +17777777777, and the fictional
+    # 555-01xx block (+13055550142 was dialed once and came back disconnected).
+    _p = row.phone_e164
+    if re.fullmatch(r"\+1(\d)\1{9}", _p) or re.fullmatch(r"\+1\d{3}5550[1][0-9]{2}", _p):
+        return Decision(row, "skip", f"FLAG: placeholder phone number ({_p!r})", local)
     if row.is_dnc:
         return Decision(row, "skip", "do_not_call", local)
     if row.is_closed:

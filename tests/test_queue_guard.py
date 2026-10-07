@@ -25,6 +25,13 @@ class InvalidNumbers(unittest.TestCase):
             self.assertEqual(d.action, "skip", p)
             self.assertIn("not a valid US number", d.reason)
 
+    def test_placeholder_numbers_are_skipped(self):
+        for p in ("+19999999999", "+16666666666", "+13333333333", "+17777777777", "+13055550142"):
+            d = scheduler.evaluate(row(p), ET_EVENING)
+            self.assertEqual(d.action, "skip", p)
+            self.assertIn("placeholder", d.reason)
+        self.assertNotIn("placeholder", scheduler.evaluate(row("+12125551234"), ET_EVENING).reason)
+
     def test_a_real_number_is_not_skipped_for_that_reason(self):
         d = scheduler.evaluate(row("+12029228118"), ET_EVENING)
         self.assertNotIn("not a valid US number", d.reason)
