@@ -51,3 +51,4 @@ phone_review.csv
 tests/golden/invalid_phone_dnc_undo.json
 tests/golden/reliable_dnc_undo.json
 tests/golden/audit_1008_undo.json
+tests/golden/undead_undo.json

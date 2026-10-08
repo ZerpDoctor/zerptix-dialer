@@ -22,8 +22,12 @@ from __future__ import annotations
 STATUS_MAP = {
     "busy": "busy",
     "no-answer": "no_answer",
-    "failed": "disconnected",
-    "canceled": "disconnected",
+    # A carrier "failed"/"canceled" status means the call could not be completed THIS TIME -- an unallocated number, but also
+    # a routing fault or a block. 28 such calls were logged `disconnected` (which locks the company out and sets
+    # do_not_call); 15 of the 34 numbers ever logged disconnected connected on a later attempt. Only a carrier
+    # "not in service" ANNOUNCEMENT (ivr.decide_tail) is a confirmed dead number.
+    "failed": "unknown",
+    "canceled": "unknown",
 }
 
 ALL_OUTCOMES = {

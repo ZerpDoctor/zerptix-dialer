@@ -116,5 +116,23 @@ class WrongBusinessGreeting(unittest.TestCase):
         self.assertFalse(greeting_names_other_business("Level Creek Property Restoration", "Thank you for calling. Please leave a message after the tone."))
 
 
+class CarrierFailedIsNotADeadNumber(tc.Outcomes):
+    def test_failed_and_canceled_are_unknown_and_retried_not_disconnected(self):
+        from app import outcomes
+        for cs in ("failed", "canceled"):
+            rec = self.rec("", ivr_detected=False)
+            rec.call_status = cs
+            out, note = server._compute_outcome(rec)
+            self.assertEqual(out, "unknown", cs)
+            self.assertIn("retried", note)
+        self.assertEqual(outcomes.from_call_status("busy"), "busy")
+        self.assertEqual(outcomes.from_call_status("no-answer"), "no_answer")
+        self.assertTrue(outcomes.is_terminal_status("failed"))
+
+    def test_only_a_carrier_announcement_is_a_confirmed_dead_number(self):
+        d = ivr.decide_tail("We're sorry. The number you have dialed is not in service.", "unknown", "RESCON")
+        self.assertEqual(d.outcome, "disconnected")
+
+
 if __name__ == "__main__":
     unittest.main()

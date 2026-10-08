@@ -307,6 +307,8 @@ def _compute_outcome(rec) -> tuple[str, str]:
     cs = (rec.call_status or "").lower()
     by_status = outcomes.from_call_status(cs)
     if by_status:
+        if cs in ("failed", "canceled"):
+            return by_status, f"carrier reported the call {cs} before it connected (not a confirmed dead number; it will be retried)"
         return by_status, ""
 
     # Recover a real AMD verdict this process's in-memory copy is missing.
