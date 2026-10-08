@@ -87,6 +87,21 @@ def greeting_names_other_business(company: str, transcript: str) -> bool:
     return True
 
 
+def names_company(company: str, transcript: str) -> bool:
+    """True if at least one distinctive word of the Queue company name is heard in the recording (speech-to-text garbling
+    allowed) -- positive evidence that the number reaches the right business."""
+    toks = [w for w in re.findall(r"[a-z0-9]+", (company or "").lower()) if len(w) >= 3 and w not in _GENERIC_NAME_WORDS and w != "new"]
+    words = re.findall(r"[a-z0-9]+", (transcript or "").lower())
+    squashed = "".join(words)
+    for tok in toks:
+        if tok in squashed:
+            return True
+        for w in words:
+            if len(tok) >= 4 and len(w) >= 3 and difflib.SequenceMatcher(None, tok, w).ratio() >= 0.6:
+                return True
+    return False
+
+
 def assess(row: dict) -> tuple[str, str]:
     outcome = (row.get("outcome") or "").strip().lower()
     digits = [d for d in (row.get("digits_sent") or "").split(",") if d.strip()]
