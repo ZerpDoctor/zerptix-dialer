@@ -41,6 +41,52 @@ _UNRELIABLE = ("evidence unreliable",)
 _OUTAGE = ("anthropic unavailable", "anthropic api error", "credit balance")
 
 
+import difflib
+import re
+
+# Words every restoration company has; a greeting that shares only these with the Queue name says nothing about identity.
+_GENERIC_NAME_WORDS = {
+    "restoration", "restorations", "restore", "restores", "services", "service", "construction", "cleaning", "company",
+    "group", "water", "fire", "mold", "mould", "damage", "environmental", "property", "disaster", "recovery", "remediation",
+    "contractors", "contracting", "general", "solutions", "systems", "emergency", "repair", "repairs", "building", "home",
+    "homes", "inc", "llc", "corp", "the", "and", "of", "pros", "professional", "professionals", "specialists", "experts",
+    "mitigation", "reconstruction", "renovation", "remodeling", "national", "american", "advanced", "complete", "first",
+}
+_NAMING_CUE = re.compile(
+    r"(?:thank(?:s| you) for (?:calling|choosing|contacting)|you(?:'ve| have) reached|welcome to)\s+([a-z0-9&'-]+(?: [a-z0-9&'-]+){0,4})")
+_NOT_A_NAME = {"us", "our", "the", "a", "an", "my", "this", "your", "please", "office", "one", "leave", "we", "i", "if", "for",
+               "voicemail", "voice", "mailbox", "now", "today", "at", "to", "in", "and", "all"}
+
+
+def greeting_names_other_business(company: str, transcript: str) -> bool:
+    """True if the recording introduces itself with a business NAME ("thank you for calling X") and none of the Queue
+    company's distinctive name words appear anywhere in what was heard, allowing for speech-to-text garbling and for
+    the name being run together. 2026-10-07: Environmental Protective Solutions -> "Home Insights Home Inspections" and
+    Storm Damage Services -> "Red Dirt Sanitation" were both logged as proven misses for companies we never reached
+    (wrong Clay phone numbers)."""
+    t = (transcript or "").lower()
+    named = False
+    for m in _NAMING_CUE.finditer(t):
+        words = m.group(1).split()
+        if words and words[0] not in _NOT_A_NAME:
+            named = True
+            break
+    if not named:
+        return False
+    toks = [w for w in re.findall(r"[a-z0-9]+", (company or "").lower()) if len(w) >= 3 and w not in _GENERIC_NAME_WORDS and w != "new"]
+    if not toks:
+        return False
+    words = re.findall(r"[a-z0-9]+", t)
+    squashed = "".join(words)
+    for tok in toks:
+        if tok in squashed:
+            return False
+        for w in words:
+            if len(tok) >= 4 and len(w) >= 3 and difflib.SequenceMatcher(None, tok, w).ratio() >= 0.6:
+                return False
+    return True
+
+
 def assess(row: dict) -> tuple[str, str]:
     outcome = (row.get("outcome") or "").strip().lower()
     digits = [d for d in (row.get("digits_sent") or "").split(",") if d.strip()]
@@ -56,6 +102,10 @@ def assess(row: dict) -> tuple[str, str]:
     if any(p in transcript for p in ("does not accept solicitation", "doesn't accept solicitation", "do not accept solicitation",
                                      "no solicitation", "no soliciting", "not accept any solicitation")):
         return "no", "do not contact: the number says it does not accept solicitation calls (do_not_call)"
+
+    if outcome in ("voicemail", "alt_miss", "gatekeeping_miss", "extended_hold") and greeting_names_other_business(
+            row.get("company_name") or "", row.get("ivr_transcript") or ""):
+        return "review", "the greeting names a different business than the Queue row -- the phone number may be wrong"
 
     # Owner policy 2026-10-06 (AllPro Restoration & Janitorial: pressed the emergency option, then 60s of nothing): a call
     # that used the FULL hold budget and was hung up by us as normal is a proven miss -- 60 seconds is the standard we hold

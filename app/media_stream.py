@@ -116,6 +116,10 @@ def ringing_after_greeting(energy: list) -> bool:
                     k += 1
             if len(runs) < 2:
                 continue
+            # Ringback tone bursts are ~3 buckets long and ~6s apart; a person saying a short greeting twice ("Mold Masters.
+            # Mold Masters.", 2 buckets, 4s apart) is not ringing (Mold Masters 2026-10-07 was turned `unknown` by this rule).
+            if any(e - s < 3 for s, e in runs) or any(not 5 <= b[0] - a[0] <= 7 for a, b in zip(runs, runs[1:])):
+                continue
             means = [sum(w[s:e]) / (e - s) for s, e in runs]
             gaps = [w[e1:s2] for (_, e1), (s2, _) in zip(runs, runs[1:])]
             if max(means) - min(means) <= 6 and all(g and max(g) < -65 for g in gaps):

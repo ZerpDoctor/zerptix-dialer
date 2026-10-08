@@ -43,7 +43,10 @@ _DIGIT_WORDS = {
 # recognized"). Three or four spoken digits in a row; never "nine one one".
 _SPOKEN_EXT = (r"(?!nine[\s-]+one[\s-]+one)(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)"
                r"(?:[\s-]+(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)){2,3}")
-_DIGIT_TOKEN = (r"(?:" + _SPOKEN_EXT + r"|(?:one|two|three|four|five|six|seven|eight|nine)\s+hundred|[1-9]00|[0-9]"
+# "press star. One." / "press star two" is the TWO-key sequence *1 / *2 (DryTech Restoration 2026-10-07: we pressed only
+# "*", the menu looped, and the call was logged a hold).
+_STAR_DIGIT = (r"(?:star|pound|hash|asterisk)[" + chr(92) + r"s.,-]{1,3}(?:zero|oh|one|two|three|four|five|six|seven|eight|nine|[0-9])(?![a-z0-9])")
+_DIGIT_TOKEN = (r"(?:" + _STAR_DIGIT + r"|" + _SPOKEN_EXT + r"|(?:one|two|three|four|five|six|seven|eight|nine)\s+hundred|[1-9]00|[0-9]"
                 r"|zero|one|two|three|four|five|six|seven|eight|nine|pound|hash|star)")
 _PRESS_VERB = r"(?:press|select|dial|enter|push|choose|hit|key in)"
 
@@ -101,6 +104,8 @@ _VOICEMAIL_CONTROL_PHRASES = [
     # TWM Water Restoration of Raleigh 2026-10-05: "Press pound when finished. To listen to your message,
     # press one. To rerecord your message, press two" -- we pressed # on it.
     "rerecord your message", "press pound when finished", "leave your message at the tone",
+    # Environmental Resources & Services 2026-10-07: "...you may hang up, or press one for more options" -- we pressed 1.
+    "for more options", "press the pound key for more options",
 ]
 
 # A transcript that explicitly announces a menu is about to be read out, but
@@ -515,7 +520,9 @@ class GatekeepingDecision:
 # receptionist... state your full name" was logged gatekeeping_miss, email_safe yes).
 _AI_RECEPTIONIST = re.compile(
     r"\b(this is (the|our|an?) (\w+ ){0,3}ai\b|\bai (\w+ ){0,2}(receptionist|assistant|agent)\b"
-    r"|virtual (receptionist|assistant)|voice assistant)")
+    r"|virtual (receptionist|assistant)|voice assistant"
+    # Cary Reconstruction 2026-10-07: "We're closed right now, so I'm the assistant picking up. Tell me what's going on..."
+    r"|assistant picking up|i'?m the (?:ai )?assistant)")
 
 
 def looks_like_gatekeeping(transcript: str) -> GatekeepingLook:
@@ -576,7 +583,7 @@ class AltContactDecision:
 # two one six four" (Mitigation X, 2026-09-29): a spoken phone number after
 # call/text/dial is a redirect however the sentence is worded. Haiku still
 # makes the actual call; this only decides whether it is consulted.
-_ALT_CALL_VERB = re.compile(r"\b(?:call|text|dial|reach)\s+(?:us\s+|me\s+|him\s+|her\s+|them\s+)?(?:at\s+|on\s+)?")
+_ALT_CALL_VERB = re.compile(r"\b(?:call|text|dial|reach|contact)\s+(?:us\s+|me\s+|him\s+|her\s+|them\s+)?(?:at\s+|on\s+)?")
 _SPOKEN_DIGIT_TOKENS = {"zero", "oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"}
 # A pointer to 911 is boilerplate on many voicemails, not a redirect.
 _EMERGENCY_SERVICES_NUMBER = re.compile(r"\b(911|nine one one)\b")
@@ -631,6 +638,46 @@ def _spoken_number_after_call_verb(t: str) -> bool:
     return False
 
 
+_REDIRECT_CUE = re.compile(r"emergen|urgent|immediate|after[- ]hours|additional assistance|further assistance")
+_HANG_UP_AND_CALL = re.compile(r"hang up and (?:call|dial)")
+
+
+def emergency_redirect_number(transcript: str) -> bool:
+    """True if a greeting hands the caller a phone number to call for an emergency / immediate help -- "If this is an
+    emergency, please call us at eight seven seven ...", "If you need immediate assistance, please contact Andrea Johnson at
+    six one zero ...", "...hang up and call eight one three seven three four" (cut off). A voicemail that does this is an
+    alt_miss, not a plain voicemail (MGM Recovery, Delaware County, Graystone, Environmental Resources, 2026-10-07).
+    A pointer to 911 never counts."""
+    t = (transcript or "").lower()
+    if not t:
+        return False
+    for sent in re.split(r"[.?!]", t):
+        if not _REDIRECT_CUE.search(sent) or _EMERGENCY_SERVICES_NUMBER.search(sent):
+            continue
+        need = 6 if _HANG_UP_AND_CALL.search(sent) else 10
+        for m in _ALT_CALL_VERB.finditer(sent):
+            toks = re.findall(r"[a-z]+|\d+", sent[m.end():m.end() + 160])
+            i, digits = 0, 0
+            while i < len(toks) and i <= 5 and not (toks[i].isdigit() or toks[i] in _SPOKEN_DIGIT_TOKENS):
+                i += 1
+            while i < len(toks) and (toks[i].isdigit() or toks[i] in _SPOKEN_DIGIT_TOKENS):
+                digits += len(toks[i]) if toks[i].isdigit() else 1
+                i += 1
+            if digits >= need:
+                return True
+    return False
+
+
+_CALL_SCREENING = re.compile(
+    r"record your name and reason for calling|say your name then press pound|at the tone,? please say your name|"
+    r"state your name and (?:reason|google voice)|i'?ll see if this person is available")
+
+
+def call_screening(transcript: str) -> bool:
+    """A screening prompt (Google Voice style) -- no person has answered; the owner counts it as alt_miss."""
+    return bool(_CALL_SCREENING.search((transcript or "").lower()))
+
+
 def looks_like_alt_contact(transcript: str) -> AltContactLook:
     """Cheap keyword pre-filter, only ever consulted by the caller AFTER
     looks_like_menu() has already said this is NOT a menu -- so a real digit-
@@ -659,6 +706,11 @@ def decide_alt_contact(transcript: str) -> AltContactDecision:
     (confirmed_miss), while a false negative just falls through to the
     existing (already-safe) non-menu/AMD handling.
     """
+    # "If you know the extension of the person you are trying to reach, you may dial at any time" is the START of a menu,
+    # not a redirect (Black Diamond Remediation 2026-10-07 was logged alt_miss, email_safe yes, and hung up on at 21s).
+    _look = looks_like_alt_contact(transcript)
+    if _look.matched and all("extension" in m for m in _look.matched):
+        return AltContactDecision(False, False, "none", "only an extension prompt was heard (the start of a menu), not a redirect")
     try:
         h = classify_alt_contact(transcript)
     except AnthropicUnavailable as e:
@@ -691,6 +743,11 @@ def _norm_digit(tok: str) -> str:
     parts = re.split(r"[\s-]+", t)
     if len(parts) >= 3 and all(w in _DIGIT_WORDS and _DIGIT_WORDS[w].isdigit() for w in parts):
         return "".join(_DIGIT_WORDS[w] for w in parts)
+    sp = [w for w in re.split(r"[\s.,-]+", t) if w]
+    if len(sp) == 2 and sp[0] in ("star", "pound", "hash", "asterisk") and sp[1] in _DIGIT_WORDS and _DIGIT_WORDS[sp[1]].isdigit():
+        return _DIGIT_WORDS[sp[0]] + _DIGIT_WORDS[sp[1]]
+    if len(sp) == 2 and sp[0] in ("star", "pound", "hash", "asterisk") and sp[1].isdigit():
+        return _DIGIT_WORDS[sp[0]] + sp[1]
     return _DIGIT_WORDS.get(t, t)
 
 
@@ -885,6 +942,11 @@ def _option_clause(t: str, digit: str) -> tuple[str, bool]:
                 nxt = t[sent_end + 1:(min(nxt_end) if nxt_end else len(t))].strip()
                 if nxt.startswith(("for ", "to ", "if ")) and not _OPT_ANCHOR.search(nxt):
                     return clause + " " + nxt, bool(nxt_end)
+                # "Please press one. For emergency services, two for accounting, or three for general" (Commercial
+                # Disaster Recovery 2026-10-07): the bare press owns the text up to the next option.
+                _na = _OPT_ANCHOR.search(nxt)
+                if nxt.startswith("for ") and _na and _na.group("d2") and len(nxt[:_na.start()].split()) >= 2:
+                    return clause + " " + nxt[:_na.start()], True
                 prv_start = max(t.rfind(c, 0, max(sent_start - 1, 0)) for c in ".?!") + 1
                 prv = t[prv_start:max(sent_start - 1, 0)].strip()
                 if prv.startswith(("for ", "to ", "if ")) and not _OPT_ANCHOR.search(prv):
@@ -901,7 +963,10 @@ _SOLE_NOT_THE_WAY = re.compile(
     r"hang up|disconnect|opt out|unsubscribe|finished|done|tone|cancel|janitorial|pound|star|"
     # American Property Restoration 2026-10-06: "If you have a question about an existing service, please dial two"
     # was the first sentence of a longer menu; we pressed 2 (existing customers) before the rest was read.
-    r"existing|current|ongoing|previous|status|follow[- ]?up)\b")
+    r"existing|current|ongoing|previous|status|follow[- ]?up|"
+    # Blue River Environmental 2026-10-07: "To dial by name, please press one" was the first sentence of a longer
+    # greeting ("If this matter requires immediate assistance, please ..."); our press cut the emergency instruction off.
+    r"by name|dial by|spell)\b")
 
 
 def _sole_option_is_final(t: str, clause: str) -> bool:
@@ -1244,6 +1309,8 @@ _DISCONNECTED_PHRASES = [
     "no longer in service", "is not in service", "number you dialed has been changed",
     "has been disconnected", "not a working number", "number you have dialed is not",
     "cannot be completed as dialed",
+    # Total Fire and Water Restoration 2026-10-07: a lapsed toll-free number plays the 800.com resale ad.
+    "get this valuable number", "valuable number today",
 ]
 # Things only a person (or a live greeting) says -- self-introduction, an
 # offer to help, a reactive "Hello?" -- as opposed to a recording's wording.
@@ -1356,7 +1423,9 @@ def reactive_greeting(transcript: str) -> str | None:
 _HOLD_ANNOUNCE = re.compile(
     r"\b(please hold|hold please|hold on|one moment|just a moment|a moment please|hold while|please wait|"
     r"will be with you|stay on the line|please stay on|connect(?:ing)? you|"
-    r"be right with you|right with you|with you (?:shortly|momentarily|in a moment))\b")
+    r"be right with you|right with you|with you (?:shortly|momentarily|in a moment)|"
+    # C&B Complete 2026-10-07: "Hello. You are now being directly connected to a CNV team member." -- a recorded transfer.
+    r"being (?:directly )?connected|being transferred)\b")
 # Anchored: ONLY the disclosure itself. A looser pattern swallowed "this call will be recorded for quality
 # and training Circling, good evening" (speech-to-text dropped the period) and hid the person's greeting.
 _RECORDING_BOILERPLATE = re.compile(

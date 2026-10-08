@@ -354,6 +354,10 @@ def _compute_outcome(rec) -> tuple[str, str]:
         # looking at what was actually heard.
         cap_transcript = _tail_of(rec)
         cap_note = ""
+        if ivr.emergency_redirect_number(rec.transcript_accum):
+            # Graystone Restoration 2026-10-07: rang 32s, then "if this is an after hours emergency, please hang up and call
+            # eight one three seven three four..." (cut off) -- we waited out the budget and logged a hold.
+            return "alt_miss", "the greeting gives an emergency number to call (heard before the budget ran out)"
         if cap_transcript:
             decision = ivr.decide_tail(cap_transcript, answered_by, rec.company_name, ring_seen=getattr(rec, "ring_seen", False))
             # amd_fallback means neither a real keyword match NOR a confident
@@ -477,6 +481,14 @@ def _compute_outcome(rec) -> tuple[str, str]:
 
     decision = ivr.decide_tail(transcript, answered_by, rec.company_name, ring_seen=getattr(rec, "ring_seen", False))
     note = f"tail: {decision.reasoning}" if decision.reasoning else ""
+    # A greeting that hands the caller an emergency NUMBER, or a call-screening prompt, with nobody having answered, is an
+    # alternative-contact miss -- decided by rule, not left to a model that said no (MGM Recovery, Delaware County,
+    # Environmental Resources, Liberty Restoration, 2026-10-07).
+    if decision.outcome != "answered":
+        _why = ("the greeting gives an emergency number to call" if ivr.emergency_redirect_number(rec.transcript_accum)
+                else "a call-screening prompt (no person answered)" if ivr.call_screening(rec.transcript_accum) else "")
+        if _why:
+            return "alt_miss", f"tail: {_why}" + (f" ({decision.reasoning})" if decision.reasoning else "")
     # Triage 2026-10-05: AMD heard a machine and all we ever got was "Thank you for calling Triage. Property
     # Restoration Specialist." -- the start of a greeting or menu, not an answer. Keyword-only, thin, machine = unknown.
     # (Deliberate rules -- a person's name after a hold announcement, an AI receptionist -- are classifier "rule"

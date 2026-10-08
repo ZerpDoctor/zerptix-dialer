@@ -49,3 +49,4 @@ tests/golden/gmb_phone_swap_undo.json
 tests/golden/phone_search_fix_undo.json
 phone_review.csv
 tests/golden/invalid_phone_dnc_undo.json
+tests/golden/reliable_dnc_undo.json
