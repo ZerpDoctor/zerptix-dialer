@@ -310,6 +310,31 @@ def sibling_block(row: QueueRow, siblings: list[QueueRow], today: date) -> str |
     return None
 
 
+def late_night_due(rows: list[QueueRow], now_utc: datetime) -> int:
+    """How many companies are due in TONIGHT's late-night window: second/fourth attempts (the last call was in the evening
+    window) whose minimum gap will have passed by the late-night window's calendar day (the day after this evening)."""
+    n = 0
+    for row in rows:
+        tz = parse_tz(row.timezone)
+        if tz is None or row.attempts < 1 or next_window_for(row) != "deep_night":
+            continue
+        if not re.fullmatch(r"\+1[2-9]\d{9}", row.phone_e164 or "") or row.is_dnc or row.is_closed:
+            continue
+        if row.this_quarter_status in (STATUS_CONFIRMED_MISS, STATUS_CONFIRMED_COVERED):
+            continue
+        if row.attempts >= CFG.sched_max_attempts_per_quarter:
+            continue
+        due = (now_utc.astimezone(tz).date() + timedelta(days=1))
+        if emailed_this_quarter(row.email_track, due):
+            continue
+        if row.next_eligible_date and row.next_eligible_date > due.isoformat():
+            continue
+        if row.last_call_date == due.isoformat():
+            continue
+        n += 1
+    return n
+
+
 def evaluate(row: QueueRow, now_utc: datetime) -> Decision:
     tz = parse_tz(row.timezone)
     if tz is None:
@@ -577,6 +602,18 @@ def tick(now_utc: datetime | None = None, *, queue=None, dialer=None,
     if pending_resets and not dry_run:
         queue.update_many(pending_resets)
 
+    # Save part of tonight's cap for the late-night window's due calls (see CFG.sched_late_reserve_fraction).
+    reserve, total_cap = 0, 0
+    if CFG.sched_late_reserve_fraction > 0:
+        _active = [n for n in CFG.signalwire_from_numbers if CFG.signalwire_nightly_caps.get(n) != 0]
+        _caps = [_cap_for(n) for n in _active]
+        if _active and all(c > 0 for c in _caps):
+            total_cap = sum(_caps)
+            _due = late_night_due(all_rows, now_utc)
+            reserve = min(_due, int(total_cap * CFG.sched_late_reserve_fraction))
+            if reserve:
+                log.info("  late-night reserve: %d of %d reserved for tonight's late-night window (%d due)", reserve, total_cap, _due)
+
     by_site: dict[str, list[QueueRow]] = {}
     if CFG.sched_sibling_block:
         for r in all_rows:
@@ -606,6 +643,12 @@ def tick(now_utc: datetime | None = None, *, queue=None, dialer=None,
             if not gate_verdict[0]:
                 out.append(Decision(row, "skip", f"GATE: dialing paused -- {gate_verdict[1]}", d.local_now, d.window))
                 continue
+
+        if reserve and d.window == "evening" and sum(pool_counts.values()) >= total_cap - reserve:
+            out.append(Decision(row, "skip",
+                                f"late-night reserve: {sum(pool_counts.values())}/{total_cap} used, the last {reserve} are saved for "
+                                "tonight's late-night window (second attempts that are due)", d.local_now, d.window))
+            continue
 
         if fair_offsets and d.window == "evening":
             share = _tz_share_allowance(d.local_now, fair_offsets, fair_total)

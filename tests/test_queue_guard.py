@@ -240,6 +240,74 @@ class ExplicitZeroCapIsOff(unittest.TestCase):
             scheduler.CFG = orig
 
 
+class LateNightReserve(unittest.TestCase):
+    """Second attempts are due in the late-night window, which shares the nightly cap with the evening window."""
+
+    LATE_NIGHT = datetime(2026, 9, 30, 6, 35, tzinfo=timezone.utc)      # 2:35am Eastern, the night of 9/29
+
+    def setUp(self):
+        import dataclasses
+        self._cfg = scheduler.CFG
+        scheduler.CFG = dataclasses.replace(
+            scheduler.CFG, signalwire_from_numbers=["+1A", "+1B"], signalwire_nightly_caps={"+1A": 5, "+1B": 5},
+            sched_late_reserve_fraction=0.5, sched_sibling_block=False)
+        self._counts, self._rr = scheduler._pool_dial_counts, scheduler._pool_rr_index
+
+    def tearDown(self):
+        scheduler.CFG = self._cfg
+        scheduler._pool_dial_counts, scheduler._pool_rr_index = self._counts, self._rr
+
+    def rows(self, fresh, due):
+        out = []
+        for i in range(fresh):
+            d = {h: "" for h in HEADER}
+            d.update({"company_name": f"Fresh {i}", "phone_e164": f"+1202555{3000 + i}", "timezone": "America/New_York", "state": "VA",
+                      "current_quarter_attempts": "0", "this_quarter_status": "in_progress"})
+            out.append(d)
+        for i in range(due):
+            d = {h: "" for h in HEADER}
+            d.update({"company_name": f"Due {i}", "phone_e164": f"+1202555{4000 + i}", "timezone": "America/New_York", "state": "VA",
+                      "current_quarter_attempts": "1", "this_quarter_status": "in_progress", "last_call_window": "evening",
+                      "last_call_date": "2026-09-18", "next_eligible_date": "2026-09-28"})
+            out.append(d)
+        return out
+
+    def run_tick(self, now, rows):
+        from app.queue_backend import MemoryQueue
+        scheduler._pool_dial_counts = {}
+        return scheduler.tick(now, queue=MemoryQueue(rows), dialer=lambda *a, **k: "CAx", dry_run=True,
+                              activity_fn=lambda day: [], gate=_OpenGate())
+
+    def test_the_evening_window_leaves_the_reserve_for_the_due_calls(self):
+        out = self.run_tick(ET_EVENING, self.rows(fresh=12, due=8))
+        dials = [d for d in out if d.action == "would-dial"]
+        self.assertEqual(len(dials), 5)                                   # cap 10, 8 due -> reserve min(8, 5) = 5
+        self.assertTrue(all(d.row.company_name.startswith("Fresh") for d in dials))
+        self.assertTrue(any("late-night reserve" in d.reason for d in out if d.action == "skip"))
+
+    def test_the_late_night_window_then_has_room_for_them(self):
+        out = self.run_tick(self.LATE_NIGHT, self.rows(fresh=12, due=8))
+        dials = [d for d in out if d.action == "would-dial"]
+        self.assertEqual(len(dials), 8)                                   # all 8 due calls fit under the cap of 10
+        self.assertTrue(all(d.row.company_name.startswith("Due") for d in dials))
+
+    def test_nothing_due_means_nothing_reserved(self):
+        out = self.run_tick(ET_EVENING, self.rows(fresh=12, due=0))
+        self.assertEqual(len([d for d in out if d.action == "would-dial"]), 10)
+
+    def test_the_rule_can_be_switched_off(self):
+        import dataclasses
+        scheduler.CFG = dataclasses.replace(scheduler.CFG, sched_late_reserve_fraction=0)
+        out = self.run_tick(ET_EVENING, self.rows(fresh=12, due=8))
+        self.assertEqual(len([d for d in out if d.action == "would-dial"]), 10)
+
+    def test_an_uncapped_number_disables_the_rule(self):
+        import dataclasses
+        scheduler.CFG = dataclasses.replace(scheduler.CFG, signalwire_nightly_caps={"+1A": 5})
+        out = self.run_tick(ET_EVENING, self.rows(fresh=12, due=8))
+        self.assertEqual(len([d for d in out if d.action == "would-dial"]), 12)   # +1B uncapped: nothing to reserve against
+
+
 class _OpenGate:
     def allow(self, rows):
         return True, ""

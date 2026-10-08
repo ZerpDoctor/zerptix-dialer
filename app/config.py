@@ -204,6 +204,11 @@ class Config:
     # One company, several Queue rows (same website, different numbers): treat it as ONE company when deciding to dial
     # (2026-10-06: 21 companies were called on two numbers within two days).
     sched_sibling_block: bool = True
+    # Companies whose second attempt is due in tonight's late-night window share the nightly cap with the evening window
+    # (counted per UTC day). Without a reserve the evening window uses it all and the due calls starve (127 come due 10/11,
+    # 140 on 10/14). The evening window may use at most (total cap - reserve); reserve = min(due, this fraction of the cap).
+    # 0 turns the rule off.
+    sched_late_reserve_fraction: float = 0.5
     sched_max_attempts_per_quarter: int = 4
     sched_first_window: str = "evening"
     sched_tick_seconds: int = 60
@@ -375,6 +380,7 @@ def load() -> Config:
         sched_min_days_between_attempts=int(_get("SCHED_MIN_DAYS_BETWEEN_ATTEMPTS", "10") or "10"),
         sched_quarter_turn_min_days=int(_get("SCHED_QUARTER_TURN_MIN_DAYS", "42") or "42"),
         sched_sibling_block=_bool("SCHED_SIBLING_BLOCK", True),
+        sched_late_reserve_fraction=float(_get("SCHED_LATE_NIGHT_RESERVE", "0.5") or "0.5"),
         sched_max_attempts_per_quarter=int(_get("SCHED_MAX_ATTEMPTS_PER_QUARTER", "4") or "4"),
         sched_first_window=_get("SCHED_FIRST_WINDOW", "evening"),
         sched_tick_seconds=int(_get("SCHED_TICK_SECONDS", "60") or "60"),
