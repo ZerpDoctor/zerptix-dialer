@@ -106,6 +106,8 @@ _VOICEMAIL_CONTROL_PHRASES = [
     "rerecord your message", "press pound when finished", "leave your message at the tone",
     # Environmental Resources & Services 2026-10-07: "...you may hang up, or press one for more options" -- we pressed 1.
     "for more options", "press the pound key for more options",
+    # Edd Water Damage 2026-10-08: "Directly to voice mail. Press star." -- we pressed * on a voicemail system.
+    "directly to voice mail", "to review the voice mail", "to send the voice mail now", "to discard and rerecord",
 ]
 
 # A transcript that explicitly announces a menu is about to be read out, but
@@ -522,7 +524,9 @@ _AI_RECEPTIONIST = re.compile(
     r"\b(this is (the|our|an?) (\w+ ){0,3}ai\b|\bai (\w+ ){0,2}(receptionist|assistant|agent)\b"
     r"|virtual (receptionist|assistant)|voice assistant"
     # Cary Reconstruction 2026-10-07: "We're closed right now, so I'm the assistant picking up. Tell me what's going on..."
-    r"|assistant picking up|i'?m the (?:ai )?assistant)")
+    r"|assistant picking up|i'?m the (?:ai )?assistant"
+    # Remediation Pros 2026-10-08: "I'm Anna, an automated assistant ... I'll take a message for the team."
+    r"|an? automated assistant)")
 
 
 def looks_like_gatekeeping(transcript: str) -> GatekeepingLook:
@@ -1149,6 +1153,25 @@ class Decision:
     # emergency language appears anywhere in the transcript.
 
 
+def _is_voicemail_option(transcript: str, digit: str | None) -> bool:
+    """The option that digit names (by its own clause) is leaving a message / voicemail."""
+    if not digit:
+        return False
+    clause = _option_clause((transcript or "").lower(), str(digit))[0]
+    return bool(re.search(r"voice ?mail|mailbox|leave (?:a |us a |your )?(?:message|name)", clause))
+
+
+def _lowest_guess_is_unsafe(transcript: str, options, pick) -> bool:
+    """True if a keyword fallback's pick must NOT be pressed: nothing to press, the option is leaving a message, or it is just
+    "the lowest digit" of several options and does not say it reaches a person (Ace Mold: "For Javi, press one ...")."""
+    if pick.digit is None or _is_voicemail_option(transcript, pick.digit):
+        return True
+    if "took lowest" in pick.reason and len(options) >= 2:
+        clause = _option_clause((transcript or "").lower(), str(pick.digit))[0]
+        return not any(w in clause for w in _CONNECT_WORDS)
+    return False
+
+
 def decide_digit(transcript: str) -> Decision:
     """Called only after `looks_like_menu` has passed. Confirms with Haiku and
     picks the digit; on any Anthropic failure, logs loudly and uses keyword
@@ -1158,6 +1181,8 @@ def decide_digit(transcript: str) -> Decision:
     numbered options with no clear emergency/after-hours instruction, or any
     time keyword priority (not Haiku) chose the digit.
     """
+    if promo_recording(transcript):
+        return Decision(False, None, "keyword", False, "a promotional recording, not a menu (wrong number); not pressing")
     screen_digit = human_verification_digit(transcript)
     if screen_digit:
         return Decision(True, screen_digit, "keyword", False,
@@ -1181,6 +1206,9 @@ def decide_digit(transcript: str) -> Decision:
             return Decision(False, None, "keyword_fallback", False,
                             f"anthropic unavailable ({e}); keywords: not a menu")
         pick = choose_digit_by_priority(transcript)
+        if _lowest_guess_is_unsafe(transcript, options, pick):
+            return Decision(False, None, "keyword_fallback", False,
+                            f"anthropic unavailable ({e}); no safe digit to press ({pick.reason}); not pressing blind")
         return Decision(True, pick.digit, "keyword_fallback", True,
                         f"anthropic unavailable ({e}); {pick.reason}",
                         is_emergency_route=pick.is_emergency)
@@ -1225,6 +1253,13 @@ def decide_digit(transcript: str) -> Decision:
     valid_digits = {d for d, _ in options}
     if valid_digits and h["digit"] not in valid_digits:
         pick = choose_digit_by_priority(transcript)
+        # "took lowest offered digit" is a guess, and the lowest digit is often the voicemail option (KC Construction
+        # 2026-10-08: "To leave a voice mail, press one. If this is an emergency, please stay on the line" -- we pressed 1)
+        # or a person's extension (Ace Mold: "For Javi, press one ... or stay on the line to speak to a representative").
+        if _lowest_guess_is_unsafe(transcript, options, pick):
+            return Decision(False, None, "haiku", False,
+                            f"haiku chose digit {h['digit']!r} not grounded in any parsed menu option; no safe digit to press "
+                            f"({pick.reason}); not pressing blind")
         return Decision(True, pick.digit, "keyword_fallback", True,
                         f"haiku chose digit {h['digit']!r} not grounded in any parsed menu "
                         f"option (parsed: {sorted(valid_digits)}); {pick.reason}",
@@ -1326,6 +1361,35 @@ _STRONG_VOICEMAIL_GREETING = (
 )
 
 
+_PROMO_RECORDING = (
+    "special promotion today for select callers", "you've been selected for a special promotion", "free medical alert device",
+    "if you are over fifty, please press one",
+)
+
+
+def promo_recording(transcript: str) -> bool:
+    """An unrelated telemarketing recording ("a special promotion today for select callers ... press one") answered a Clay
+    number: it is not the company, so nothing about it may become a claim. Laser Restoration, Trinicon and Uncle G, all
+    2026-10-08, were logged extended_hold / email_safe yes."""
+    t = (transcript or "").lower()
+    return any(p in t for p in _PROMO_RECORDING)
+
+
+def pickup_after_greeting(transcript: str, company_name: str) -> str | None:
+    """Reason if a recording was cut off by a PERSON who says the company's full name and then "Hello?" -- D and B
+    Restoration Services, 2026-10-08: "...Leave a detailed message. We'll get back [cut] D and B Restoration Services.
+    Hello?" was logged voicemail, email_safe yes. A recording never ends with its own company name and a hello."""
+    sents = [x.strip() for x in re.split(r"[.?!]", (transcript or "").lower()) if x.strip()]
+    if len(sents) < 3 or not re.fullmatch(r"(?:hello|hi|hey)(?: there)?", sents[-1]):
+        return None
+    want = [w for w in re.findall(r"[a-z0-9]+", (company_name or "").lower()) if w not in ("llc", "inc", "co", "corp", "the")]
+    got = re.findall(r"[a-z0-9]+", sents[-2])
+    # the sentence ENDS with the company's full name (the recording's last words may run into it: "we'll get back D and B ...")
+    if len(want) >= 2 and got[-len(want):] == want:
+        return "a person cut the recording off, said the company name and 'hello'"
+    return None
+
+
 def menu_replayed_after_press(raw_tail: str) -> str | None:
     """Reason if what was heard AFTER the digit press is just a menu playing (again): at
     least one "press N" and nothing after the last one that only a person -- or a
@@ -1390,7 +1454,10 @@ def refuses_solicitation(transcript: str) -> bool:
 _ASKS_CALLER = re.compile(
     r"\bis this (?:a|an) [^.?!]{0,70}emergency\s*\?|\bwhat(?:'s| is) your emergency\b|\bwho am i (?:speaking|talking) (?:to|with)\b"
     # "Thank you for calling X. And you're calling about ...?" (Next Level Restoration, 2026-10-06)
-    r"|\band (?:you(?:'re| are)|are you) calling about\b")
+    r"|\band (?:you(?:'re| are)|are you) calling about\b"
+    # Thomasville Restoration 2026-10-08: "Are you calling to report an emergency or a new claim?" (asked twice, then "due to
+    # no response ... this call is being ended") -- a question to the caller is an answering agent.
+    r"|\bare you calling (?:to report|for|about|regarding)[^.?!]{0,60}\?")
 _CALL_FAILED = ("unable to complete", "cannot connect your call", "can't connect your call", "could not be completed",
                 "cannot be connected at this time")
 _OFFER_HELP = re.compile(r"\b(how (can|may) (i|we) (help|assist|direct)|can i help|may i help|what can i do)\b")
@@ -1689,6 +1756,12 @@ def _decide_tail(transcript: str, answered_by: str | None, company_name: str = "
     # (Lightning Restoration, 2026-10-05, was left unknown).
     if _AI_RECEPTIONIST.search(low) and not any(p in low for p in _STRONG_VOICEMAIL_GREETING):
         return TailDecision("answered", "rule", "an AI receptionist answered (owner policy: counts as answered)", amd_guess == "voicemail")
+
+    if promo_recording(low):
+        return TailDecision("unknown", "rule", "an unrelated promotional recording answered (wrong number)", False)
+    pk = pickup_after_greeting(transcript, company_name)
+    if pk:
+        return TailDecision("answered", "rule", pk, amd_guess == "voicemail")
 
     hp = hold_pending(transcript)
     if hp:

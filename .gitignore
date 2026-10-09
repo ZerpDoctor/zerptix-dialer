@@ -52,3 +52,8 @@ tests/golden/invalid_phone_dnc_undo.json
 tests/golden/reliable_dnc_undo.json
 tests/golden/audit_1008_undo.json
 tests/golden/undead_undo.json
+outscraper_queries.txt
+outscraper_queries_key.csv
+outscraper_queries_test.txt
+phone_unverified.csv
+unsent_misses_unverified_number.csv

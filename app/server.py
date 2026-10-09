@@ -336,6 +336,9 @@ def _compute_outcome(rec) -> tuple[str, str]:
         if answered_by:
             recovery_source = "a direct SignalWire lookup (webhook never arrived)"
 
+    if ivr.promo_recording(rec.transcript_accum):
+        return "unknown", "an unrelated promotional recording answered (wrong number); nothing here is a claim about the company"
+
     if rec.gatekeeping_detected:
         # reasoning goes into the row via rec.gatekeeping_reasoning in
         # _build_row (same pattern as rec.ivr_reasoning), not duplicated here.
@@ -469,6 +472,8 @@ def _compute_outcome(rec) -> tuple[str, str]:
         # from "...press five for billing. Thank you for calling Bone Dry
         # Services."
         _raw_post = rec.transcript_accum[rec.transcript_at_last_digit:]
+        if "zip code" in _raw_post.lower() and ivr.looks_like_gatekeeping(_raw_post).is_gatekeeping:
+            return "gatekeeping_miss", "tail: after the press the line demands a ZIP code before connecting"
         _queue = ivr.queue_or_callback(_raw_post)
         _mro = None if _queue else (ivr.menu_replayed_after_press(_raw_post) or ivr.menu_recording_only(_raw_post))
         if _mro:

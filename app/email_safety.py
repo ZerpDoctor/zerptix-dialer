@@ -50,7 +50,7 @@ _GENERIC_NAME_WORDS = {
     "group", "water", "fire", "mold", "mould", "damage", "environmental", "property", "disaster", "recovery", "remediation",
     "contractors", "contracting", "general", "solutions", "systems", "emergency", "repair", "repairs", "building", "home",
     "homes", "inc", "llc", "corp", "the", "and", "of", "pros", "professional", "professionals", "specialists", "experts",
-    "mitigation", "reconstruction", "renovation", "remodeling", "national", "american", "advanced", "complete", "first",
+    "mitigation", "reconstruction", "renovation", "remodeling", "national", "american", "advanced", "complete", "first", "all", "one",
 }
 _NAMING_CUE = re.compile(
     r"(?:thank(?:s| you) for (?:calling|choosing|contacting)|you(?:'ve| have) reached|welcome to)\s+([a-z0-9&'-]+(?: [a-z0-9&'-]+){0,4})")
