@@ -955,6 +955,11 @@ def _option_clause(t: str, digit: str) -> tuple[str, bool]:
                 prv = t[prv_start:max(sent_start - 1, 0)].strip()
                 if prv.startswith(("for ", "to ", "if ")) and not _OPT_ANCHOR.search(prv):
                     return prv + " " + clause, bool(ends)
+                # "Thank you for calling J and J ERS for emergency services or to schedule. Please press one." (J&J ERS
+                # 2026-10-09: we pressed 2, "someone in the office"): the label is the trailing "for ..." of the greeting.
+                _lab = re.search(r"\bfor \b[^.?!]*$", prv)
+                if _lab and not _OPT_ANCHOR.search(prv):
+                    return prv[_lab.start():] + " " + clause, bool(ends)
             return clause, bool(ends)
         nxt = next((a.start() for a in in_sent if a.start() > m.start()), sent_end)
         return t[m.start():nxt], bool(ends) or nxt < sent_end
@@ -1277,7 +1282,10 @@ def decide_digit(transcript: str) -> Decision:
 # --- tail classification ----------------------------------------------------
 
 _MENU_LEAD = re.compile(
-    r"\b(if you (would like|'d like|wish|want|need)|otherwise|"
+    # "If your call is not urgent, please leave your..." is the rest of the greeting our press interrupted (Dart Restoration
+    # 2026-10-09: it was read as a voicemail and we hung up 16s after pressing the emergency option).
+    r"\b(if (?:your call|this call|this|it)(?: is| isn't| is not)? [^.?!]{0,30}(?:urgent|emergency)|"
+    r"if you (would like|'d like|wish|want|need)|otherwise|"
     r"press (one|two|three|four|five|six|seven|eight|nine|zero|star|pound|\d)|"
     r"for [a-z ]{2,40}, (please )?press)\b", re.I)
 
@@ -1388,6 +1396,26 @@ def pickup_after_greeting(transcript: str, company_name: str) -> str | None:
     if len(want) >= 2 and got[-len(want):] == want:
         return "a person cut the recording off, said the company name and 'hello'"
     return None
+
+
+_FRESH_GREETING = re.compile(r"^(?:thank you for calling|thanks for calling|welcome to|you(?:'ve| have) reached)")
+
+
+def second_emergency_digit(post_press_text: str) -> str | None:
+    """After an emergency press, a FRESH recording that again names an emergency option ("Thank you for calling RestoreNow...
+    If you have an emergency need for services, please press one to be connected to our on call project manager. All other
+    callers, please hold to leave us a message") needs that press too -- RestoreNow 2026-10-09 stopped one level short and
+    sat in the general mailbox. Menu leftovers (the rest of the menu our press interrupted) never qualify: the text must
+    START with a new greeting and contain a complete emergency option."""
+    t = (post_press_text or "").strip()
+    if not t:
+        return None
+    sents = [x.strip().lower() for x in re.split(r"(?<=[.?!])" + chr(92) + "s+", t) if x.strip()]
+    start = next((i for i, x in enumerate(sents) if _FRESH_GREETING.match(x)), None)
+    if start is None or start > 2:
+        return None
+    q = quick_digit(" ".join(sents[start:]), require_complete=True)
+    return q[0] if q and q[2] else None
 
 
 def menu_replayed_after_press(raw_tail: str) -> str | None:

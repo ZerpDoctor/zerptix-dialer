@@ -1268,6 +1268,18 @@ def ivr_turn(stage: str, level: int) -> Response:
     # connection already in progress.
     already_on_emergency_route = bool((rec.emergency_route or rec.stop_navigating) and rec.digits_sent)
 
+    if already_on_emergency_route and len(rec.digits_sent) == 1 and stage == "menu":
+        _dig = ivr.second_emergency_digit(ivr.post_press_tail(rec.transcript_accum, rec.transcript_at_last_digit))
+        _qb = media_stream.get_buffer(call_sid).quiet_for() if CFG.stream_transcription_enabled else None
+        if _dig and (_qb is None or _qb >= CFG.listen_press_quiet_seconds):
+            STORE.record_digit(call_sid, _dig, "keyword", False, "rule: a second recording names the emergency option again",
+                               is_emergency_route=True)
+            STORE.update(call_sid, stop_navigating=True, phase="awaiting_tail",
+                         press_diag=(rec.press_diag + "; " if rec.press_diag else "")
+                         + f"second emergency prompt: press {_dig} @+{STORE.seconds_since_answered(call_sid):.0f}s")
+            log.info("IVR second emergency press call_sid=%s digit=%s", call_sid, _dig)
+            return _twiml(f'<Play digits="{_dig}"/>' + _gather("tail", 0, CFG.ivr_tail_gather_seconds))
+
     if (menu_look and not already_on_emergency_route
             and (menu_look.is_menu or (gatekeeping and gatekeeping.has_digit_option)
                  or (alt_contact and alt_contact.has_digit_option))):
@@ -1302,7 +1314,9 @@ def ivr_turn(stage: str, level: int) -> Response:
             # A press that asks for a person -- the emergency line, a representative, the
             # operator -- ends navigation: whatever follows is the answer to it.
             _clause = ivr._option_clause((segment or "").lower(), str(decision.digit))[0]
-            if (decision.is_emergency_route or ivr._clause_emergency(_clause)
+            # (a "water, mold or fire damage" option is the line we want too: One Team Restoration 2026-10-09 pressed 1 and then,
+            # off the leftover of the same menu, 2 = mold remediation)
+            if (decision.is_emergency_route or ivr._clause_emergency(_clause) or ivr._clause_damage_service(_clause)
                     or any(w in _clause for w in ivr._CONNECT_WORDS)):
                 STORE.update(call_sid, stop_navigating=True)
             # Timing evidence for every press: how long after answer, and how

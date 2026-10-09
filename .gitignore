@@ -58,3 +58,5 @@ outscraper_queries_test.txt
 phone_unverified.csv
 unsent_misses_unverified_number.csv
 tests/golden/audit_1009_undo.json
+email_clean.csv
+tests/golden/dart_undo.json

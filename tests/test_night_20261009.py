@@ -56,5 +56,46 @@ class Night20261009(tc.Outcomes):
         self.assertEqual((d.outcome, d.classifier), ("answered", "rule"))
 
 
+class PostPressAndLabelFixes(tc.Outcomes):
+    JJ = ("Thank you for calling J and J ERS for emergency services or to schedule. Please press one. "
+          "To speak with someone in the office, please press two.")
+    DART = ("Thank you for calling Dart Restoration. You have reached us outside of our normal business hours. If you are experiencing "
+            "an emergency and need immediate assistance, please press one now to be connected with a live representative. "
+            "If your call is not urgent, please leave your")
+    RESTORENOW_2 = ("Thank you for calling RestoreNow. All calls are recorded for quality and training purposes. If you have an "
+                    "emergency need for services, please press one to be connected to our on call project manager. All other "
+                    "callers, please hold to leave us a message. Our office is currently closed. This is the general voice mailbox "
+                    "for RestoreNow. Please record your detailed message, and a member of our team will return your call.")
+    ONETEAM = ("Thank you for calling OneTeam Restoration. If you are currently experiencing a water or fire loss in your home or "
+               "business, press one. For mold remediation, press two.")
+
+    def test_jj_ers_the_label_before_a_bare_please_press_one_is_the_emergency_option(self):
+        q = ivr.quick_digit(self.JJ)
+        self.assertEqual((q[0], q[2]), ("1", True))
+
+    def test_dart_the_rest_of_the_greeting_our_press_interrupted_is_not_a_voicemail(self):
+        idx = self.DART.index("If your call is not urgent")
+        self.assertEqual(ivr.post_press_tail(self.DART, idx), "")
+        rec = self.rec(self.DART, idx=idx, digits=["1"], company="Dart Restoration")
+        server.STORE.seconds_since_answered = lambda sid: 30.0
+        self.assertNotEqual(server._compute_outcome(rec)[0], "voicemail")
+
+    def test_restorenow_a_fresh_recording_naming_the_emergency_option_again_is_pressed_once(self):
+        self.assertEqual(ivr.second_emergency_digit(self.RESTORENOW_2), "1")
+
+    def test_a_second_press_is_never_taken_from_menu_leftovers_or_other_menus(self):
+        for t in ("Press two for billing. Press three for sales.",
+                  "If you would like to leave a message, press nine.",
+                  "Thank you for calling RestoreNow. To help direct your call, please listen. Press one if you are a homeowner. Press two if you are a vendor.",
+                  ""):
+            self.assertIsNone(ivr.second_emergency_digit(t), t)
+
+    def test_one_team_a_water_or_fire_loss_option_ends_navigation_like_an_emergency_option(self):
+        q = ivr.quick_digit(self.ONETEAM)
+        self.assertEqual(q[0], "1")
+        clause = ivr._option_clause(self.ONETEAM.lower(), "1")[0]
+        self.assertTrue(ivr._clause_damage_service(clause))
+
+
 if __name__ == "__main__":
     unittest.main()
