@@ -42,12 +42,17 @@ _DIGIT_WORDS = {
 # "dial one one eight" is extension 118 (Prime Aire Mold Services, 2026-10-06: we pressed 1 and got "that extension is not
 # recognized"). Three or four spoken digits in a row; never "nine one one".
 _SPOKEN_EXT = (r"(?!nine[\s-]+one[\s-]+one)(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)"
-               r"(?:[\s-]+(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)){2,3}")
+               r"(?:[\s-]+(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)){2,3}"
+               r"(?![\s-]+(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)\b)")
+# A longer run is a phone number being read out ("if this is an emergency, please dial seven two four four five six two seven
+# nine six" -- G S Kusich 2026-10-11 pressed 7244; "for further assistance, please dial eight seven one six three six four" --
+# Flood Restoration Services pressed 8716), never a menu option.
 # "press star. One." / "press star two" is the TWO-key sequence *1 / *2 (DryTech Restoration 2026-10-07: we pressed only
 # "*", the menu looped, and the call was logged a hold).
 _STAR_DIGIT = (r"(?:star|pound|hash|asterisk)[" + chr(92) + r"s.,-]{1,3}(?:zero|oh|one|two|three|four|five|six|seven|eight|nine|[0-9])(?![a-z0-9])")
 _DIGIT_TOKEN = (r"(?:" + _STAR_DIGIT + r"|" + _SPOKEN_EXT + r"|(?:one|two|three|four|five|six|seven|eight|nine)\s+hundred|[1-9]00|[0-9]"
-                r"|zero|one|two|three|four|five|six|seven|eight|nine|pound|hash|star)")
+                r"|zero|one|two|three|four|five|six|seven|eight|nine|pound|hash|star)"
+                r"(?![\s-]+(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)\b)")
 _PRESS_VERB = r"(?:press|select|dial|enter|push|choose|hit|key in)"
 
 # Structural patterns: a press-verb + digit, or a digit tied to "for"/"to".
