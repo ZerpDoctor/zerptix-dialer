@@ -335,6 +335,19 @@ def late_night_due(rows: list[QueueRow], now_utc: datetime) -> int:
     return n
 
 
+def paused_until(local_dt: datetime) -> bool:
+    """True if SCHED_PAUSE_UNTIL is set and this company-local moment belongs to a calling day before it. Deep-night
+    (before noon) belongs to the previous day's evening, so Mon 2am is Sunday's calling day."""
+    if not CFG.sched_pause_until:
+        return False
+    try:
+        resume = date.fromisoformat(CFG.sched_pause_until)
+    except ValueError:
+        return True   # unparseable pause date: fail safe, don't dial
+    calling_day = local_dt.date() - timedelta(days=1) if local_dt.hour < 12 else local_dt.date()
+    return calling_day < resume
+
+
 def evaluate(row: QueueRow, now_utc: datetime) -> Decision:
     tz = parse_tz(row.timezone)
     if tz is None:
@@ -370,6 +383,8 @@ def evaluate(row: QueueRow, now_utc: datetime) -> Decision:
     win = active_window(local)
     if win is None:
         return Decision(row, "skip", "outside calling windows / not a calling day", local)
+    if paused_until(local):
+        return Decision(row, "skip", f"PAUSED until {CFG.sched_pause_until}", local, win.name)
     nxt = next_window_for(row)
     if win.name != nxt:
         return Decision(row, "skip", f"in {win.name} window, next attempt is {nxt}", local, win.name)

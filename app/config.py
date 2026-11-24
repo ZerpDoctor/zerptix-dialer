@@ -197,6 +197,9 @@ class Config:
     sched_evening_window: str = "21:30-22:30"
     sched_deep_night_window: str = "02:00-04:00"
     sched_calling_days: str = "Sun,Mon,Tue,Wed,Thu"
+    # ISO date (YYYY-MM-DD). No calling day before this date is dialed; blank = no pause. A calling day owns its
+    # evening plus the 2-4am after, so the deep-night window just after the last paused evening is paused too.
+    sched_pause_until: str = ""
     sched_min_days_between_attempts: int = 10
     # Across a quarter turn the 10-day gap is not enough: a company called 2 weeks before the turn was redialed 2 weeks
     # later (2026-10-06). Owner rule: at least this many days after the last call, whatever quarter it was in.
@@ -377,6 +380,7 @@ def load() -> Config:
         sched_evening_window=_get("SCHED_EVENING_WINDOW", "21:30-22:30"),
         sched_deep_night_window=_get("SCHED_DEEP_NIGHT_WINDOW", "02:00-04:00"),
         sched_calling_days=_get("SCHED_CALLING_DAYS", "Sun,Mon,Tue,Wed,Thu"),
+        sched_pause_until=_get("SCHED_PAUSE_UNTIL", "").strip(),
         sched_min_days_between_attempts=int(_get("SCHED_MIN_DAYS_BETWEEN_ATTEMPTS", "10") or "10"),
         sched_quarter_turn_min_days=int(_get("SCHED_QUARTER_TURN_MIN_DAYS", "42") or "42"),
         sched_sibling_block=_bool("SCHED_SIBLING_BLOCK", True),
